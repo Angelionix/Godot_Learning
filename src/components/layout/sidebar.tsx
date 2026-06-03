@@ -11,6 +11,8 @@ import { getAllProjectChaptersMap } from "@/lib/chapter-data";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
+const APP_VERSION = "v0.3.0";
+
 export function Sidebar() {
   const pathname = usePathname();
   const { isOpen, toggle } = useSidebarStore();
@@ -45,65 +47,75 @@ export function Sidebar() {
       </div>
 
       {isOpen && (
-        <ScrollArea className="flex-1">
-          <div className="p-3">
-            <h2 className="mb-3 px-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Проекты
-            </h2>
-            <nav className="flex flex-col gap-0.5">
-              {projects.map((project) => {
-                const chapters = projectChaptersMap[project.slug] || [];
-                const isExpanded = expandedProjects[project.slug];
-                const isActive = pathname.includes(project.slug);
+        <div className="flex flex-1 flex-col min-h-0">
+          <ScrollArea className="flex-1">
+            <div className="p-3">
+              <h2 className="mb-3 px-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Проекты
+              </h2>
+              <nav className="flex flex-col gap-0.5">
+                {projects.map((project) => {
+                  const chapters = projectChaptersMap[project.slug] || [];
+                  const isExpanded = expandedProjects[project.slug];
+                  const isActive = pathname.includes(project.slug);
 
-                return (
-                  <div key={project.slug}>
-                    <button
-                      onClick={() => toggleProject(project.slug)}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm transition-colors hover:bg-sidebar-accent",
-                        isActive && "bg-sidebar-accent text-sidebar-accent-foreground"
+                  return (
+                    <div key={project.slug}>
+                      <button
+                        onClick={() => toggleProject(project.slug)}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm transition-colors hover:bg-sidebar-accent",
+                          isActive && "bg-sidebar-accent text-sidebar-accent-foreground"
+                        )}
+                      >
+                        <span className="text-base">{project.icon}</span>
+                        <span className="flex-1 truncate text-left">{project.title}</span>
+                        {isExpanded ? (
+                          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+                        ) : (
+                          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+                        )}
+                      </button>
+
+                      {isExpanded && (
+                        <div className="ml-4 mt-0.5 flex flex-col gap-0.5 border-l border-border pl-2">
+                          {chapters.map((chapter) => {
+                            const chapterPath = `/learn/${project.slug}/${chapter.slug}`;
+                            const isChapterActive = pathname === chapterPath;
+
+                            return (
+                              <Link
+                                key={chapter.slug}
+                                href={chapterPath}
+                                className={cn(
+                                  "flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors",
+                                  isChapterActive
+                                    ? "bg-primary/10 text-primary font-medium"
+                                    : "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent"
+                                )}
+                              >
+                                <BookOpen className="size-3 shrink-0" />
+                                <span className="truncate">{chapter.title}</span>
+                              </Link>
+                            );
+                          })}
+                        </div>
                       )}
-                    >
-                      <span className="text-base">{project.icon}</span>
-                      <span className="flex-1 truncate text-left">{project.title}</span>
-                      {isExpanded ? (
-                        <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-                      ) : (
-                        <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
-                      )}
-                    </button>
+                    </div>
+                  );
+                })}
+              </nav>
+            </div>
+          </ScrollArea>
 
-                    {isExpanded && (
-                      <div className="ml-4 mt-0.5 flex flex-col gap-0.5 border-l border-border pl-2">
-                        {chapters.map((chapter) => {
-                          const chapterPath = `/learn/${project.slug}/${chapter.slug}`;
-                          const isChapterActive = pathname === chapterPath;
-
-                          return (
-                            <Link
-                              key={chapter.slug}
-                              href={chapterPath}
-                              className={cn(
-                                "flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors",
-                                isChapterActive
-                                  ? "bg-primary/10 text-primary font-medium"
-                                  : "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent"
-                              )}
-                            >
-                              <BookOpen className="size-3 shrink-0" />
-                              <span className="truncate">{chapter.title}</span>
-                            </Link>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </nav>
+          {/* Sidebar Footer */}
+          <div className="border-t border-border px-3 py-2 shrink-0">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span className="font-mono">{APP_VERSION}</span>
+              <span>Godot Learning</span>
+            </div>
           </div>
-        </ScrollArea>
+        </div>
       )}
     </aside>
   );

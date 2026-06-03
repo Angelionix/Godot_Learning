@@ -203,3 +203,50 @@ Stage Summary:
 - All Sprint 3 documentation updated to reflect completion status
 - 5 tech debt items closed, 2 new items added
 - Development workflow guide created for onboarding
+
+---
+Task ID: content-format-fix
+Agent: main
+Task: Fix content formatting issues - lists, highlights, code overflow, chapter numbering
+
+Work Log:
+- Updated `globals.css`: added `overflow-x-auto` for `.prose pre`, `display: grid` for `.prose pre code`, padding via `[data-line]`, highlight styles for `<mark>`, `.key-point`, `.warning-note`, `.important-note`
+- Rewrote all 9 MDX chapter files for Project 1 (Clicker):
+  - introduction: goals list wrapped in `<Callout type="info">`, bold keywords in each goal
+  - chapter-01-game-design: paragraphs → lists, Callout/Insight for key moments
+  - chapter-02-architecture: 4 architecture layers → numbered list, danger/warning Callouts
+  - chapter-03-project-setup: numbered step lists, danger Callout for Autoload order
+  - chapter-04-gdscript-basics: signal types → numbered list, info/tip Callouts
+  - chapter-05-implementation: bullet lists for key moments, danger Callout for separation principle
+  - chapter-06-visual-effects: info Callout for PackedScene, tip for gradient creation
+  - chapter-07-publishing: renamed to "Глава 7: Публикация и экспорт", warning Callout for Web limits
+  - chapter-08-summary: renamed to "Глава 8: Итоги проекта"
+- Updated `_meta.json`: "Публикация и экспорт" → "Глава 7: Публикация и экспорт", "Глава 7: Итоги" → "Глава 8: Итоги"
+- Updated `chapter-data.ts`: matching title changes
+- Added TD-033 to `docs/tech-debt.md`: course sequence review (signals in ch2, GDScript in ch4)
+
+Stage Summary:
+- All chapters reformatted with proper lists and visual highlights (Callout/Insight)
+- Code blocks no longer overflow horizontally
+- Chapter numbering fixed: Publishing = Ch7, Summary = Ch8
+- TD-033 added flagging course sequence issue
+
+---
+Task ID: versioning
+Agent: main
+Task: Implement app versioning (SemVer) + fix goals list visibility
+
+Work Log:
+- Changed `package.json` name from `nextjs_tailwind_shadcn_ts` to `godot-learning-platform`
+- Updated `package.json` version from `0.2.0` to `0.3.0`
+- Created `VERSION` file at project root (0.3.0)
+- Created `CHANGELOG.md` with full history (0.1.0, 0.2.0, 0.3.0)
+- Created `docs/versioning.md` with SemVer rules, PATCH/MINOR/MAJOR criteria, release process
+- Added version display in sidebar footer (`sidebar.tsx`): `v0.3.0` + "Godot Learning"
+- Wrapped introduction goals list in `<Callout type="info">` with bold keywords
+
+Stage Summary:
+- App versioning implemented with SemVer scheme
+- Version visible in sidebar footer
+- CHANGELOG and versioning rules documented
+- Goals list now visually highlighted with Callout component
