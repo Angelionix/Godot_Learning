@@ -8,9 +8,10 @@ const MonacoEditor = dynamic(() => import('@monaco-editor/react'), {
   ssr: false,
   loading: () => (
     <div className="flex items-center justify-center h-full bg-[#1e1e2e] rounded-lg">
-      <div className="flex flex-col items-center gap-3">
+      <div className="flex flex-col items-center gap-3 p-4">
         <div className="w-8 h-8 border-2 border-[#ff7085] border-t-transparent rounded-full animate-spin" />
         <span className="text-sm text-gray-400">Загрузка редактора...</span>
+        <span className="text-xs text-gray-500">Редактор Monaco (~3MB)</span>
       </div>
     </div>
   ),
@@ -181,9 +182,10 @@ export default function GDScriptEditor({
         theme="godot-dark"
         loading={
           <div className="flex items-center justify-center h-full bg-[#1e1e2e]">
-            <div className="flex flex-col items-center gap-3">
+            <div className="flex flex-col items-center gap-3 p-4">
               <div className="w-8 h-8 border-2 border-[#ff7085] border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm text-gray-400">Загрузка редактора...</span>
+              <span className="text-sm text-gray-400">Загрузка Monaco...</span>
+              <span className="text-xs text-gray-500">Редактор загружается впервые</span>
             </div>
           </div>
         }

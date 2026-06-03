@@ -4,11 +4,13 @@ import "./globals.css";
 import { ThemeProvider } from "@/providers/theme-provider";
 import { QueryProvider } from "@/providers/query-provider";
 import { Header } from "@/components/layout/header";
-import { Sidebar } from "@/components/layout/sidebar";
+import { Sidebar, type SidebarProjectData } from "@/components/layout/sidebar";
 import { Footer } from "@/components/layout/footer";
 import { MobileBottomNav } from "@/components/layout/mobile-bottom-nav";
 import { BadgeNotification } from "@/components/gamification/badge-notification";
 import { Toaster } from "@/components/ui/sonner";
+import { getAllProjects } from "@/lib/content";
+import { projects as projectDisplayData } from "@/lib/projects";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -93,11 +95,36 @@ export const viewport: Viewport = {
   themeColor: "#478CBF",
 };
 
+/**
+ * Build sidebar data from _meta.json (server-side, single source of truth).
+ * Merges chapter lists from content system with display metadata from projects.ts.
+ */
+function buildSidebarData(): SidebarProjectData[] {
+  const contentProjects = getAllProjects();
+  return projectDisplayData.map((display) => {
+    const contentProject = contentProjects.find(
+      (cp) => cp.projectSlug === display.slug
+    );
+    return {
+      slug: display.slug,
+      title: display.title,
+      icon: display.icon,
+      chapters: contentProject
+        ? contentProject.chapters
+            .sort((a, b) => a.order - b.order)
+            .map((ch) => ({ slug: ch.slug, title: ch.title }))
+        : [],
+    };
+  });
+}
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const sidebarData = buildSidebarData();
+
   return (
     <html
       lang="ru"
@@ -109,7 +136,7 @@ export default function RootLayout({
           <QueryProvider>
             <Header />
             <div className="flex flex-1 overflow-hidden">
-              <Sidebar />
+              <Sidebar projects={sidebarData} />
               <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
                 {children}
               </main>

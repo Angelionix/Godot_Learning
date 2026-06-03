@@ -6,20 +6,33 @@ import { ChevronRight, ChevronDown, BookOpen, PanelLeftClose, PanelLeft } from "
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { useSidebarStore } from "@/store/sidebar-store";
-import { projects } from "@/lib/projects";
-import { getAllProjectChaptersMap } from "@/lib/chapter-data";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 import { APP_VERSION } from "@/lib/version";
 
-export function Sidebar() {
+/** Chapter data passed from server — source of truth is _meta.json */
+export interface SidebarChapterInfo {
+  slug: string;
+  title: string;
+}
+
+export interface SidebarProjectData {
+  slug: string;
+  title: string;
+  icon: string;
+  chapters: SidebarChapterInfo[];
+}
+
+interface SidebarProps {
+  /** Project data loaded from _meta.json on the server */
+  projects: SidebarProjectData[];
+}
+
+export function Sidebar({ projects }: SidebarProps) {
   const pathname = usePathname();
   const { isOpen, toggle } = useSidebarStore();
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
-
-  // Load chapter data from shared module (syncs with _meta.json)
-  const projectChaptersMap = getAllProjectChaptersMap();
 
   // Only show sidebar on /learn routes
   const isLearnRoute = pathname.startsWith("/learn");
@@ -55,7 +68,7 @@ export function Sidebar() {
               </h2>
               <nav className="flex flex-col gap-0.5">
                 {projects.map((project) => {
-                  const chapters = projectChaptersMap[project.slug] || [];
+                  const chapters = project.chapters;
                   const isExpanded = expandedProjects[project.slug];
                   const isActive = pathname.includes(project.slug);
 

@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import withPWAInit from "@ducanh2912/next-pwa";
+import { withSentryConfig } from "@sentry/nextjs";
 
 const withPWA = withPWAInit({
   dest: "public",
@@ -85,4 +86,33 @@ const nextConfig: NextConfig = {
   turbopack: {},
 };
 
-export default withPWA(nextConfig);
+// Sentry configuration — wraps the Next.js config
+// Only active when SENTRY_DSN env variable is set
+const sentryConfig = {
+  // For all available options, see:
+  // https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/
+
+  // Upload a larger set of source maps for prettier stack traces
+  widenClientFileUpload: true,
+
+  // Automatically annotate React components to show their full name in breadcrumbs
+  reactComponentAnnotation: {
+    enabled: true,
+  },
+
+  // Route browser requests to Sentry through a Next.js rewrite to circumvent ad-blockers
+  tunnelRoute: "/monitoring",
+
+  // Hides source maps from generated client bundles
+  hideSourceMaps: true,
+
+  // Automatically tree-shake Sentry properties from your builds
+  disableLogger: true,
+
+  // Disables Sentry from running in development (enabled only in production via config)
+  silent: true,
+};
+
+// Compose: PWA → Sentry → Next.js config
+const configWithPWA = withPWA(nextConfig);
+export default withSentryConfig(configWithPWA, sentryConfig);

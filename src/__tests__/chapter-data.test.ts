@@ -1,64 +1,82 @@
 import { describe, it, expect } from 'vitest';
-import { getChaptersForProject, getAllProjectChaptersMap } from '@/lib/chapter-data';
+import { getProjectChapters, getAllProjects } from '@/lib/content';
 
-describe('chapter-data', () => {
-  describe('getChaptersForProject', () => {
+/**
+ * Tests for the content system — the single source of truth for chapter data.
+ * Previously tested the hardcoded chapter-data.ts; now tests _meta.json loading.
+ */
+describe('content system (chapters from _meta.json)', () => {
+  describe('getProjectChapters', () => {
     it('returns chapters for project-1-clicker', () => {
-      const chapters = getChaptersForProject('project-1-clicker');
-      expect(chapters.length).toBe(9);
+      const chapters = getProjectChapters('project-1-clicker');
+      expect(chapters.length).toBeGreaterThanOrEqual(8);
       expect(chapters[0].slug).toBe('introduction');
       expect(chapters[0].title).toBe('Введение');
-      expect(chapters[1].slug).toBe('chapter-01-game-design');
-      expect(chapters[1].title).toBe('Глава 1: Геймдизайн');
+      expect(chapters.find((c) => c.slug === 'chapter-01-game-design')).toBeDefined();
     });
 
     it('returns chapters for project-2-space-shooter', () => {
-      const chapters = getChaptersForProject('project-2-space-shooter');
-      expect(chapters.length).toBe(8);
+      const chapters = getProjectChapters('project-2-space-shooter');
+      expect(chapters.length).toBeGreaterThanOrEqual(7);
     });
 
-    it('returns chapters for project-3-metroidvania', () => {
-      const chapters = getChaptersForProject('project-3-metroidvania');
-      expect(chapters.length).toBe(4);
+    it('returns chapters for all P2-P6 projects', () => {
+      const slugs = [
+        'project-3-metroidvania',
+        'project-4-tower-defense',
+        'project-5-3d-adventure',
+        'project-6-performance-demo',
+      ];
+      for (const slug of slugs) {
+        const chapters = getProjectChapters(slug);
+        expect(chapters.length).toBeGreaterThanOrEqual(7);
+      }
     });
 
     it('returns empty array for unknown project', () => {
-      const chapters = getChaptersForProject('nonexistent-project');
+      const chapters = getProjectChapters('nonexistent-project');
       expect(chapters).toEqual([]);
     });
 
-    it('each chapter has slug and title', () => {
-      const chapters = getChaptersForProject('project-1-clicker');
+    it('each chapter has slug, title, order, xp, estimatedTime', () => {
+      const chapters = getProjectChapters('project-1-clicker');
       for (const chapter of chapters) {
         expect(chapter.slug).toBeTruthy();
         expect(chapter.title).toBeTruthy();
         expect(typeof chapter.slug).toBe('string');
         expect(typeof chapter.title).toBe('string');
+        expect(typeof chapter.order).toBe('number');
+        expect(typeof chapter.xp).toBe('number');
+      }
+    });
+
+    it('chapters are sorted by order', () => {
+      const chapters = getProjectChapters('project-1-clicker');
+      for (let i = 1; i < chapters.length; i++) {
+        expect(chapters[i].order).toBeGreaterThanOrEqual(chapters[i - 1].order);
       }
     });
   });
 
-  describe('getAllProjectChaptersMap', () => {
-    it('returns map with all 6 projects', () => {
-      const map = getAllProjectChaptersMap();
-      expect(Object.keys(map).length).toBe(6);
-      expect(map['project-1-clicker']).toBeDefined();
-      expect(map['project-2-space-shooter']).toBeDefined();
-      expect(map['project-3-metroidvania']).toBeDefined();
-      expect(map['project-4-tower-defense']).toBeDefined();
-      expect(map['project-5-3d-adventure']).toBeDefined();
-      expect(map['project-6-performance-demo']).toBeDefined();
+  describe('getAllProjects', () => {
+    it('returns all 6 projects', () => {
+      const projects = getAllProjects();
+      expect(projects.length).toBe(6);
+      expect(projects.map((p) => p.projectSlug)).toEqual([
+        'project-1-clicker',
+        'project-2-space-shooter',
+        'project-3-metroidvania',
+        'project-4-tower-defense',
+        'project-5-3d-adventure',
+        'project-6-performance-demo',
+      ]);
     });
 
-    it('map values are arrays of ChapterInfo', () => {
-      const map = getAllProjectChaptersMap();
-      for (const [slug, chapters] of Object.entries(map)) {
-        expect(Array.isArray(chapters)).toBe(true);
-        expect(chapters.length).toBeGreaterThan(0);
-        for (const chapter of chapters) {
-          expect(chapter).toHaveProperty('slug');
-          expect(chapter).toHaveProperty('title');
-        }
+    it('each project has chapters array', () => {
+      const projects = getAllProjects();
+      for (const project of projects) {
+        expect(Array.isArray(project.chapters)).toBe(true);
+        expect(project.chapters.length).toBeGreaterThan(0);
       }
     });
   });

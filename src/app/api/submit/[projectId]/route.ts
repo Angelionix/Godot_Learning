@@ -540,19 +540,23 @@ async function mockGradeProject(
 
 /**
  * Запускает GUT-тесты через headless Godot.
- * TODO: Реализовать запуск headless Godot с GUT-фреймворком,
- *       парсинг вывода GUT, формирование результатов.
- *       Пока возвращает ошибку — real-режим не реализован.
+ *
+ * TODO (INFRA): Реализовать запуск headless Godot с GUT-фреймворком.
+ *   Требует:
+ *   1. Docker-контейнер с Godot headless + GUT addon
+ *   2. Сборку проекта из файлов в S3 во временный каталог
+ *   3. Запуск: `godot --headless --script res://test_runner.gd`
+ *   4. Парсинг XML/JSON вывода GUT (gut_result.xml)
+ *   5. Формирование GradingResult
+ *
+ *   Это инфраструктурная задача — требует отдельного контейнера и оркестрации.
+ *   Пока возвращает ошибку — real-режим не реализован.
  */
 async function realGradeProject(
   _projectSlug: string,
   _projectId: string
 ): Promise<GradingResult> {
-  // TODO: Реализовать интеграцию с headless Godot:
-  // 1. Собрать проект из файлов в S3
-  // 2. Запустить Godot в headless-режиме с GUT
-  // 3. Парсить XML/JSON вывод GUT
-  // 4. Сформировать GradingResult
+  // TODO (INFRA): Реализовать интеграцию с headless Godot — см. комментарий к функции выше
   return {
     status: "error",
     totalTests: 0,

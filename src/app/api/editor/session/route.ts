@@ -6,8 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSessionSchema } from "@/validators/editor";
 import { createSession, getActiveSession } from "@/repositories/editor.repository";
-
-const DEFAULT_USER_ID = "default-user";
+import { getUserId } from "@/lib/auth";
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,7 +21,7 @@ export async function POST(request: NextRequest) {
     }
 
     const { projectSlug, projectId } = parsed.data;
-    const userId = DEFAULT_USER_ID; // TODO: заменить на реальный userId из auth
+    const userId = getUserId(); // TODO (TD-004): заменить на auth сессию
 
     // Формируем URL Godot Editor (пока плейсхолдер)
     const editorBaseUrl = process.env.GODOT_EDITOR_URL || "/editor/godot";
@@ -52,7 +51,7 @@ export async function POST(request: NextRequest) {
 
 export async function GET() {
   try {
-    const userId = DEFAULT_USER_ID; // TODO: заменить на реальный userId из auth
+    const userId = getUserId(); // TODO (TD-004): заменить на auth сессию
     const session = await getActiveSession(userId);
 
     if (!session) {

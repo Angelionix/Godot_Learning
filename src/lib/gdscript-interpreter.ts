@@ -216,6 +216,15 @@ function transpileToJS(gdscript: string): string {
   // `Vector2(x, y)` → `{x: x, y: y}`
   js = js.replace(/\bVector2\s*\(([^,)]*),\s*([^)]*)\)/g, '{x: $1, y: $2, _type: "Vector2"}');
 
+  // `Vector2i(x, y)` → `{x: x, y: y}` (integer variant)
+  js = js.replace(/\bVector2i\s*\(([^,)]*),\s*([^)]*)\)/g, '{x: Math.floor($1), y: Math.floor($2), _type: "Vector2i"}');
+
+  // `Vector3(x, y, z)` → `{x: x, y: y, z: z}`
+  js = js.replace(/\bVector3\s*\(([^,)]*),\s*([^,)]*),\s*([^)]*)\)/g, '{x: $1, y: $2, z: $3, _type: "Vector3"}');
+
+  // `Vector3i(x, y, z)` → `{x: x, y: y, z: z}` (integer variant)
+  js = js.replace(/\bVector3i\s*\(([^,)]*),\s*([^,)]*),\s*([^)]*)\)/g, '{x: Math.floor($1), y: Math.floor($2), z: Math.floor($3), _type: "Vector3i"}');
+
   // `Vector2.ZERO` → `{x: 0, y: 0}`
   js = js.replace(/\bVector2\.ZERO/g, '{x: 0, y: 0, _type: "Vector2"}');
   js = js.replace(/\bVector2\.ONE/g, '{x: 1, y: 1, _type: "Vector2"}');
@@ -223,6 +232,16 @@ function transpileToJS(gdscript: string): string {
   js = js.replace(/\bVector2\.DOWN/g, '{x: 0, y: 1, _type: "Vector2"}');
   js = js.replace(/\bVector2\.LEFT/g, '{x: -1, y: 0, _type: "Vector2"}');
   js = js.replace(/\bVector2\.RIGHT/g, '{x: 1, y: 0, _type: "Vector2"}');
+
+  // `Vector3.ZERO/ONE/UP/DOWN/LEFT/RIGHT/FORWARD/BACK` → simplified
+  js = js.replace(/\bVector3\.ZERO/g, '{x: 0, y: 0, z: 0, _type: "Vector3"}');
+  js = js.replace(/\bVector3\.ONE/g, '{x: 1, y: 1, z: 1, _type: "Vector3"}');
+  js = js.replace(/\bVector3\.UP/g, '{x: 0, y: 1, z: 0, _type: "Vector3"}');
+  js = js.replace(/\bVector3\.DOWN/g, '{x: 0, y: -1, z: 0, _type: "Vector3"}');
+  js = js.replace(/\bVector3\.LEFT/g, '{x: -1, y: 0, z: 0, _type: "Vector3"}');
+  js = js.replace(/\bVector3\.RIGHT/g, '{x: 1, y: 0, z: 0, _type: "Vector3"}');
+  js = js.replace(/\bVector3\.FORWARD/g, '{x: 0, y: 0, z: -1, _type: "Vector3"}');
+  js = js.replace(/\bVector3\.BACK/g, '{x: 0, y: 0, z: 1, _type: "Vector3"}');
 
   // `Color(r, g, b)` → simplified
   js = js.replace(/\bColor\s*\(([^,)]*),\s*([^,)]*),\s*([^)]*)\)/g,
@@ -261,17 +280,62 @@ function transpileToJS(gdscript: string): string {
   // `pass` → empty statement
   js = js.replace(/^(\s*)pass\s*$/gm, '$1/* pass */');
 
-  // `await` → comment (no async support in mock)
+  // `await signal` → comment (no async support in mock)
+  // `await Duration` → comment for realistic UX
+  js = js.replace(/await\s+get_tree\s*\(\s*\)\s*\.create_timer\s*\(([^)]+)\)/g,
+    '/* await timer */ undefined');
+  js = js.replace(/await\s+\w+\.\w+/g, '/* await signal */ undefined');
   js = js.replace(/\bawait\s+/g, '/* await */ ');
 
   // `self` → `this`
   js = js.replace(/\bself\b/g, 'this');
 
+  // `get_tree()` → mock tree object
+  js = js.replace(/get_tree\s*\(\)/g, '__mockTree');
+
+  // `get_parent()` → null (mock)
+  js = js.replace(/get_parent\s*\(\)/g, 'null');
+
+  // `queue_free()` → comment (mock)
+  js = js.replace(/queue_free\s*\(\)/g, '/* queue_free */');
+
+  // `add_child(node)` → comment (mock)
+  js = js.replace(/add_child\s*\(([^)]+)\)/g, '/* add_child($1) */');
+
+  // `remove_child(node)` → comment (mock)
+  js = js.replace(/remove_child\s*\(([^)]+)\)/g, '/* remove_child($1) */');
+
+  // `is_instance_valid(obj)` → true (mock)
+  js = js.replace(/is_instance_valid\s*\(([^)]*)\)/g, 'true');
+
+  // `is_zero_approx(value)` → approximation check
+  js = js.replace(/is_zero_approx\s*\(([^)]+)\)/g, '(Math.abs($1) < 0.00001)');
+
+  // `wrap(value, min, max)` → modular wrap
+  js = js.replace(/wrap\s*\(([^,]+),\s*([^,]+),\s*([^)]+)\)/g,
+    '(($1 < $2 ? $3 - ($2 - $1) % ($3 - $2) : $2 + ($1 - $2) % ($3 - $2)))');
+
+  // `snapped(value, step)` → snap to grid
+  js = js.replace(/snapped\s*\(([^,]+),\s*([^)]+)\)/g,
+    '(Math.round($1 / $2) * $2)');
+
+  // `move_and_slide()` → null (mock physics)
+  js = js.replace(/move_and_slide\s*\(\)/g, '/* move_and_slide */ null');
+
+  // `move_and_collide(velocity)` → null (mock physics)
+  js = js.replace(/move_and_collide\s*\(([^)]+)\)/g, '/* move_and_collide */ null');
+
   // GDScript string formatting: "text %s" % value → simplified
   // Too complex for regex; skip
 
+  // `get_node("Path")` → `null` (mock)
+  js = js.replace(/get_node\s*\(\s*['"][^'"]*['"]\s*\)/g, '/* get_node */ null');
+
   // `$NodePath` → `null` (mock)
   js = js.replace(/\$\w[\w\/]*/g, '/* $node */ null');
+
+  // `%UniqueNode` → `null` (mock unique node access)
+  js = js.replace(/%\w+/g, '/* %unique_node */ null');
 
   // `for x in range(n):` → `for (let x of __range(0, n)) {`
   // Must be done BEFORE the generic `range` → `__range` replacement
@@ -451,7 +515,7 @@ function createSandbox(output: string[], variables: Record<string, any>, timeout
       if (obj && typeof obj === 'object') return Object.keys(obj).length;
       return 0;
     },
-    // Math functions
+    // ─── Math functions ──────────────────────────────────────────────────
     abs: Math.abs,
     sign: Math.sign,
     floor: Math.floor,
@@ -473,6 +537,21 @@ function createSandbox(output: string[], variables: Record<string, any>, timeout
     randomize: () => {}, // no-op in mock
     randf: () => Math.random(),
     randi: () => Math.floor(Math.random() * 4294967296),
+    randi_range: (minVal: number, maxVal: number) => Math.floor(Math.random() * (maxVal - minVal + 1)) + minVal,
+    randf_range: (minVal: number, maxVal: number) => Math.random() * (maxVal - minVal) + minVal,
+
+    // ─── Godot Scene Tree mock ─────────────────────────────────────────
+    __mockTree: {
+      create_timer: (duration: number) => ({ timeout: duration }),
+      reload_current_scene: () => {},
+      change_scene_to_file: (path: string) => {},
+      change_scene_to_packed: (scene: any) => {},
+      get_nodes_in_group: (group: string) => [],
+      get_first_node_in_group: (group: string) => null,
+      paused: false,
+    },
+
+    // ─── Godot type constructors ────────────────────────────────────────
     Vector2: class MockVector2 {
       x: number; y: number;
       constructor(x = 0, y = 0) { this.x = x; this.y = y; }
@@ -496,6 +575,75 @@ function createSandbox(output: string[], variables: Record<string, any>, timeout
         this.r = r; this.g = g; this.b = b; this.a = a;
       }
       toString() { return `Color(${this.r}, ${this.g}, ${this.b}, ${this.a})`; }
+    },
+    Vector2i: class MockVector2i {
+      x: number; y: number;
+      constructor(x = 0, y = 0) { this.x = Math.floor(x); this.y = Math.floor(y); }
+      toString() { return `(${this.x}, ${this.y})`; }
+      static ZERO = new MockVector2i(0, 0);
+      static ONE = new MockVector2i(1, 1);
+      static UP = new MockVector2i(0, -1);
+      static DOWN = new MockVector2i(0, 1);
+      static LEFT = new MockVector2i(-1, 0);
+      static RIGHT = new MockVector2i(1, 0);
+    },
+    Vector3: class MockVector3 {
+      x: number; y: number; z: number;
+      constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+      length() { return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z); }
+      normalized() {
+        const l = this.length();
+        return l > 0 ? new MockVector3(this.x / l, this.y / l, this.z / l) : new MockVector3();
+      }
+      dot(v: any) { return this.x * v.x + this.y * v.y + this.z * v.z; }
+      toString() { return `(${this.x}, ${this.y}, ${this.z})`; }
+      static ZERO = new MockVector3(0, 0, 0);
+      static ONE = new MockVector3(1, 1, 1);
+      static UP = new MockVector3(0, 1, 0);
+      static DOWN = new MockVector3(0, -1, 0);
+      static LEFT = new MockVector3(-1, 0, 0);
+      static RIGHT = new MockVector3(1, 0, 0);
+      static FORWARD = new MockVector3(0, 0, -1);
+      static BACK = new MockVector3(0, 0, 1);
+    },
+    Vector3i: class MockVector3i {
+      x: number; y: number; z: number;
+      constructor(x = 0, y = 0, z = 0) { this.x = Math.floor(x); this.y = Math.floor(y); this.z = Math.floor(z); }
+      toString() { return `(${this.x}, ${this.y}, ${this.z})`; }
+      static ZERO = new MockVector3i(0, 0, 0);
+      static ONE = new MockVector3i(1, 1, 1);
+    },
+    Rect2: class MockRect2 {
+      x: number; y: number; width: number; height: number;
+      constructor(x = 0, y = 0, width = 0, height = 0) {
+        this.x = x; this.y = y; this.width = width; this.height = height;
+      }
+      has_point(px: number, py: number) {
+        return px >= this.x && px < this.x + this.width && py >= this.y && py < this.y + this.height;
+      }
+      toString() { return `Rect2(${this.x}, ${this.y}, ${this.width}, ${this.height})`; }
+    },
+    Dictionary: class MockDictionary extends Map<any, any> {
+      // GDScript dict is more like JS object — but Map provides get/set/has/size
+      toString() { return `Dictionary(${this.size} entries)`; }
+    },
+    Array: globalThis.Array, // Use JS native array (GDScript Array is dynamic)
+    // Resource stub — for data class pattern
+    Resource: class MockResource {
+      resource_path: string = '';
+      resource_name: string = '';
+      toString() { return `Resource(${this.resource_name})`; }
+    },
+    // Node stub — for common node method calls
+    Node: class MockNode {
+      name: string = '';
+      get_child(_idx: number) { return null; }
+      get_child_count() { return 0; }
+      get_children() { return []; }
+      find_child(_pattern: string) { return null; }
+      is_inside_tree() { return true; }
+      queue_free() {}
+      toString() { return `Node(${this.name})`; }
     },
   };
 }
@@ -702,7 +850,11 @@ function formatGDScriptType(obj: any): string {
 
   switch (obj._type) {
     case 'Vector2':
+    case 'Vector2i':
       return `(${obj.x}, ${obj.y})`;
+    case 'Vector3':
+    case 'Vector3i':
+      return `(${obj.x}, ${obj.y}, ${obj.z})`;
     case 'Color':
       return `(${obj.r}, ${obj.g}, ${obj.b}, ${obj.a ?? 1})`;
     default:

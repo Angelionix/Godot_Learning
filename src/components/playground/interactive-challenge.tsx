@@ -8,6 +8,7 @@ import GDScriptEditor from '@/components/playground/gdscript-editor';
 import OutputConsole from '@/components/playground/output-console';
 import ChallengeResults from '@/components/playground/challenge-results';
 import { executeGDScript, validateCode, type InterpreterResult, type ChallengeValidation, type TestCase } from '@/lib/gdscript-interpreter';
+import { challengeAttemptAction } from '@/actions/progress.action';
 
 export interface InteractiveChallengeProps {
   /** Unique challenge ID */
@@ -92,27 +93,19 @@ export default function InteractiveChallenge({
 
     persistingRef.current = true;
     try {
-      const response = await fetch('/api/challenges', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          projectSlug,
-          chapterSlug,
-          challengeSlug: id,
-          passed,
-          attempts: attemptCountRef.current,
-          code: userCode,
-          xp: passed ? effectiveXp : 0,
-        }),
+      const result = await challengeAttemptAction({
+        projectSlug,
+        chapterSlug,
+        challengeSlug: id,
+        passed,
+        code: userCode,
+        xp: passed ? effectiveXp : 0,
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data.success) {
-          setServerAttempts(data.attempts);
-          if (data.xpEarned > 0) {
-            toast.success(`Вы заработали ${data.xpEarned} XP за выполнение задания!`);
-          }
+      if (result.success) {
+        if ('attempts' in result) setServerAttempts(result.attempts as number);
+        if ('xpEarned' in result && (result.xpEarned as number) > 0) {
+          toast.success(`Вы заработали ${result.xpEarned} XP за выполнение задания!`);
         }
       }
     } catch (err) {

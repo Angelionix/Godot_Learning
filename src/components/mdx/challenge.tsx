@@ -11,10 +11,36 @@ const InteractiveChallenge = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="my-6 rounded-xl border-l-4 border-yellow-500 bg-yellow-50 dark:bg-yellow-950/30 p-4">
-        <div className="flex items-center gap-2 text-sm text-yellow-600 dark:text-yellow-400">
-          <div className="w-4 h-4 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin" />
-          Загрузка редактора...
+      <div className="my-6 rounded-xl border-l-4 border-yellow-500 bg-yellow-50 dark:bg-yellow-950/30 overflow-hidden animate-pulse">
+        {/* Header skeleton */}
+        <div className="px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-5 h-5 bg-yellow-300/40 dark:bg-yellow-500/20 rounded" />
+            <div className="h-4 w-24 bg-yellow-300/40 dark:bg-yellow-500/20 rounded" />
+            <div className="h-5 w-16 bg-yellow-300/40 dark:bg-yellow-500/20 rounded-full" />
+          </div>
+        </div>
+        {/* Editor skeleton */}
+        <div className="border-t border-yellow-400/20">
+          <div className="h-[250px] bg-gray-950/50 dark:bg-gray-950/70 p-3 space-y-2">
+            <div className="flex gap-2">
+              <div className="h-3 w-20 bg-gray-700/50 rounded" />
+              <div className="h-3 w-32 bg-gray-700/50 rounded" />
+            </div>
+            <div className="h-3 w-3/4 bg-gray-700/40 rounded" />
+            <div className="h-3 w-1/2 bg-gray-700/40 rounded" />
+            <div className="h-3 w-2/3 bg-gray-700/40 rounded" />
+            <div className="h-3 w-1/3 bg-gray-700/40 rounded" />
+          </div>
+        </div>
+        {/* Button skeleton */}
+        <div className="px-4 py-3 flex gap-2">
+          <div className="h-9 w-24 bg-pink-400/20 rounded-lg" />
+          <div className="h-9 w-28 bg-amber-400/20 rounded-lg" />
+        </div>
+        {/* Loading text */}
+        <div className="px-4 pb-3 text-xs text-muted-foreground">
+          Загрузка редактора кода...
         </div>
       </div>
     ),
