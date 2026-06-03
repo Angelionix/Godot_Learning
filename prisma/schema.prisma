@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -14,19 +8,65 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              String   @id @default("default-user")
+  username        String   @unique @default("student")
+  email           String?
+  avatarUrl       String?
+  xp              Int      @default(0)
+  level           Int      @default(1)
+  streak          Int      @default(0)
+  lastActiveDate  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  progress          Progress[]
+  badges            Badge[]
+  challengeAttempts ChallengeAttempt[]
 }
 
-model Post {
-  id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+model Progress {
+  id          String    @id @default(cuid())
+  userId      String
+  projectSlug String
+  chapterSlug String
+  completed   Boolean   @default(false)
+  completedAt DateTime?
+  xpEarned    Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectSlug, chapterSlug])
+}
+
+model Badge {
+  id          String   @id @default(cuid())
+  userId      String
+  slug        String
+  name        String
+  description String
+  iconUrl     String?
+  earnedAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, slug])
+}
+
+model ChallengeAttempt {
+  id            String   @id @default(cuid())
+  userId        String
+  projectSlug   String
+  chapterSlug   String
+  challengeSlug String
+  passed        Boolean  @default(false)
+  attempts      Int      @default(1)
+  code          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectSlug, chapterSlug, challengeSlug])
 }
