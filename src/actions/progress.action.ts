@@ -18,7 +18,7 @@ const DEFAULT_USER_ID = "default-user";
 export async function markChapterCompleteAction(
   projectSlug: string,
   chapterSlug: string,
-  xp: number = 0
+  xp: number = 10
 ) {
   try {
     // Validate input with Zod

@@ -7,6 +7,7 @@ import { Header } from "@/components/layout/header";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Footer } from "@/components/layout/footer";
 import { MobileBottomNav } from "@/components/layout/mobile-bottom-nav";
+import { BadgeNotification } from "@/components/gamification/badge-notification";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -47,6 +48,7 @@ export default function RootLayout({
             </div>
             <Footer />
             <MobileBottomNav />
+            <BadgeNotification />
           </QueryProvider>
         </ThemeProvider>
       </body>

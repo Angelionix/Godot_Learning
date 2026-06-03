@@ -21,7 +21,7 @@
 | Спринт 2: Навигация | ✅ Завершён | 2.1 ✅, 2.2 ✅, 2.3 ✅, 2.4 ✅ | Полностью реализовано |
 | Спринт 3: Читатель | ✅ Завершён | 3.1 ✅, 3.2 ✅, 3.3 ✅ | Все 6 проектов + все компоненты |
 | Спринт 4: Playground | ❌ Не начат | — | |
-| Спринт 5: Геймификация | ❌ Не начат | — | Частично реализовано в repository |
+| Спринт 5: Геймификация | ✅ Завершён | 5.1 ✅, 5.2 ✅, 5.3 ✅, 5.4 ✅ | Полная система геймификации + дашборд |
 | Спринт 6: Полировка | ❌ Не начат | — | |
 
 ---
@@ -156,30 +156,37 @@
 
 ### Спринт 5: Геймификация и дашборд (Неделя 5-6)
 
-#### 5.1. Система XP и уровней 🔄 (частично в repository)
+#### 5.1. Система XP и уровней ✅
 - [x] Начисление XP за действия (чтение, челленджи) — в progress.repository.ts
-- [x] Расчёт уровня (формула в repository)
-- [ ] Server Actions: `awardXP(userId, amount, reason)`
-- [ ] Отображение XP/уровня в Header
+- [x] Расчёт уровня (формула в gamification.ts)
+- [x] Server Actions: `getUserGamificationAction`, `refreshBadgesAction`
+- [x] Отображение XP/уровня в Header (XpLevelBadge компонент)
+- [x] Исправлена TD-032: XP из _meta.json вместо хардкода
+- [x] LevelProgress компонент для дашборда
 
-#### 5.2. Бейджи 🔄 (частично в repository)
-- [x] Базовый набор бейджей (first-project, chapter-master, streak-7, gdscript-pro, cpp-warrior)
-- [ ] Иконки для каждого бейджа
-- [ ] Server Action: `checkAndAwardBadges(userId)`
-- [ ] Анимация получения бейджа (toast + конфетти?)
+#### 5.2. Бейджи ✅
+- [x] Расширенный набор бейджей (24 штуки: progress, streak, skill, special)
+- [x] Иконки (emoji) для каждого бейджа + rarity (common/rare/epic/legendary)
+- [x] Server Action: `checkAndAwardBadges(userId, context)`
+- [x] Анимация получения бейджа (BadgeNotification toast)
+- [x] BadgeCard компонент (защёлкнутые/разблокированные)
+- [x] Группировка бейджей по категориям
 
-#### 5.3. Стрик
-- [ ] Отслеживание lastActiveAt
-- [ ] Расчёт текущего стрика
-- [ ] Визуальный календарь (как GitHub contributions)
-- [ ] Уведомление: «Вы на streak 7 дней!»
+#### 5.3. Стрик ✅
+- [x] Отслеживание lastActiveDate в модели User
+- [x] Расчёт текущего стрика (calculateStreak в gamification.ts)
+- [x] Визуальный календарь (StreakCalendar — GitHub contributions style)
+- [x] Статус стрика: emoji + сообщение (getStreakStatus)
+- [x] Стрик-виджет в Header (Flame icon)
 
-#### 5.4. Дашборд `/dashboard`
-- [ ] Радарная диаграмма навыков (6 осей)
-- [ ] Прогресс-бар по проектам
-- [ ] Текущий стрик
-- [ ] Последние бейджи
-- [ ] Рекомендации «Что дальше?»
+#### 5.4. Дашборд `/dashboard` ✅
+- [x] Радарная диаграмма навыков (6 осей, SkillRadar + recharts)
+- [x] Прогресс-бар по проектам (ProjectProgressCard)
+- [x] Текущий стрик + календарь активности
+- [x] Все бейджи (защёлкнутые + разблокированные)
+- [x] Рекомендации «Что дальше?» (NextRecommendation)
+- [x] Stats row: XP, Level, Chapters, Badges
+- [x] LevelProgress компонент с градиентным прогресс-баром
 
 **Deliverable:** Полная система геймификации
 

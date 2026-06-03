@@ -5,7 +5,7 @@
  * Формат: MAJOR.MINOR.PATCH (SemVer 2.0.0)
  */
 
-export const APP_VERSION = "0.4.0";
+export const APP_VERSION = "0.5.0";
 
 /**
  * Возвращает версию в формате для отображения
