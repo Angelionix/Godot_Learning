@@ -2,11 +2,42 @@
 
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
+import dynamic from 'next/dynamic';
+
+// Lazy-load the interactive challenge (Monaco is heavy)
+const InteractiveChallenge = dynamic(
+  () => import('@/components/playground/interactive-challenge'),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="my-6 rounded-xl border-l-4 border-yellow-500 bg-yellow-50 dark:bg-yellow-950/30 p-4">
+        <div className="flex items-center gap-2 text-sm text-yellow-600 dark:text-yellow-400">
+          <div className="w-4 h-4 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin" />
+          Загрузка редактора...
+        </div>
+      </div>
+    ),
+  }
+);
 
 interface ChallengeProps {
   id?: string;
   title?: string;
   difficulty?: 'green' | 'yellow' | 'red' | 'easy' | 'medium' | 'hard';
+  /** Starter code for the interactive editor */
+  starterCode?: string;
+  /** Reference solution code */
+  solutionCode?: string;
+  /** JSON string of test cases (TestCase[]) */
+  testCases?: string;
+  /** JSON string of hints (string[]) */
+  hints?: string;
+  /** XP reward */
+  xp?: number;
+  /** XP penalty per hint */
+  xpPenalty?: number;
+  /** Interactive mode: "editor" for Monaco editor, "text" for plain text (legacy) */
+  mode?: 'editor' | 'text';
   children: React.ReactNode;
   className?: string;
 }
@@ -22,8 +53,61 @@ const difficultyConfig: Record<string, { label: string; border: string; bg: stri
 
 const defaultConfig = { label: '🎯 Микровызов', border: 'border-yellow-500', bg: 'bg-yellow-50 dark:bg-yellow-950/30' };
 
-export function Challenge({ id, title, difficulty, children, className }: ChallengeProps) {
+export function Challenge({
+  id,
+  title,
+  difficulty,
+  starterCode,
+  solutionCode,
+  testCases,
+  hints,
+  xp,
+  xpPenalty,
+  mode,
+  children,
+  className,
+}: ChallengeProps) {
   const [expanded, setExpanded] = useState(false);
+
+  // If mode is 'editor' or we have starterCode/testCases, use interactive mode
+  const isInteractive = mode === 'editor' || !!starterCode || !!testCases;
+
+  if (isInteractive) {
+    // Parse test cases and hints from JSON strings
+    let parsedTestCases: any[] = [];
+    let parsedHints: string[] = [];
+
+    try {
+      if (testCases) parsedTestCases = JSON.parse(testCases);
+    } catch {
+      console.warn('Failed to parse test cases for challenge', id);
+    }
+
+    try {
+      if (hints) parsedHints = JSON.parse(hints);
+    } catch {
+      console.warn('Failed to parse hints for challenge', id);
+    }
+
+    return (
+      <InteractiveChallenge
+        id={id || `challenge-${Math.random().toString(36).slice(2, 8)}`}
+        title={title}
+        difficulty={difficulty}
+        starterCode={starterCode}
+        solutionCode={solutionCode}
+        testCases={parsedTestCases}
+        hints={parsedHints}
+        xp={xp}
+        xpPenalty={xpPenalty}
+        mode="validate"
+      >
+        {children}
+      </InteractiveChallenge>
+    );
+  }
+
+  // Legacy text-only mode
   const config = (difficulty && difficultyConfig[difficulty]) || defaultConfig;
 
   return (

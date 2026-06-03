@@ -1,7 +1,7 @@
 "use server";
 
 import { ZodError } from "zod";
-import { markChapterComplete, getProgressForUser } from "@/repositories/progress.repository";
+import { markChapterComplete, getProgressForUser, recordChallengeAttempt, getChallengeAttempts } from "@/repositories/progress.repository";
 import {
   markChapterCompleteSchema,
   getUserProgressSchema,
@@ -55,17 +55,35 @@ export async function getUserProgressAction(userId: string = DEFAULT_USER_ID) {
   }
 }
 
-export async function challengeAttemptAction(input: ChallengeAttemptInput) {
+export async function challengeAttemptAction(
+  input: ChallengeAttemptInput & { xp?: number }
+) {
   try {
     // Validate input with Zod
     const validated = challengeAttemptSchema.parse(input);
+    const xpReward = input.xp ?? 10;
 
-    // TODO: Implement challenge attempt logic in repository
-    // For now, return a placeholder response
+    const result = await recordChallengeAttempt(
+      DEFAULT_USER_ID,
+      validated.projectSlug,
+      validated.chapterSlug,
+      validated.challengeSlug,
+      validated.code,
+      validated.passed,
+      xpReward
+    );
+
     return {
-      success: true,
-      passed: validated.passed,
-      message: validated.passed ? "Вызов пройден!" : "Попробуйте ещё раз",
+      success: result.success,
+      passed: result.passed,
+      attempts: result.attempts,
+      xpEarned: result.xpEarned,
+      newBadges: result.newBadges,
+      message: result.passed
+        ? result.xpEarned > 0
+          ? `Вызов пройден! +${result.xpEarned} XP`
+          : "Вызов пройден!"
+        : "Попробуйте ещё раз",
     };
   } catch (error) {
     if (error instanceof ZodError) {
@@ -74,5 +92,18 @@ export async function challengeAttemptAction(input: ChallengeAttemptInput) {
     }
     console.error("Error in challengeAttemptAction:", error);
     return { success: false, error: "Failed to process challenge attempt" };
+  }
+}
+
+export async function getChallengeAttemptsAction(
+  projectSlug?: string,
+  chapterSlug?: string
+) {
+  try {
+    const data = await getChallengeAttempts(DEFAULT_USER_ID, projectSlug, chapterSlug);
+    return { success: true, data };
+  } catch (error) {
+    console.error("Error in getChallengeAttemptsAction:", error);
+    return { success: false, error: "Failed to get challenge attempts" };
   }
 }

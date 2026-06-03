@@ -445,6 +445,151 @@ export async function checkAndAwardBadges(
   return newBadges;
 }
 
+/**
+ * Record a challenge attempt and update XP if passed.
+ */
+export async function recordChallengeAttempt(
+  userId: string,
+  projectSlug: string,
+  chapterSlug: string,
+  challengeSlug: string,
+  code: string,
+  passed: boolean,
+  xpReward: number = 10
+): Promise<{
+  success: boolean;
+  passed: boolean;
+  attempts: number;
+  xpEarned: number;
+  newBadges?: { slug: string; name: string; description: string; icon: string }[];
+}> {
+  // Find existing attempt or create new
+  const existing = await prisma.challengeAttempt.findUnique({
+    where: {
+      userId_projectSlug_chapterSlug_challengeSlug: {
+        userId,
+        projectSlug,
+        chapterSlug,
+        challengeSlug,
+      },
+    },
+  });
+
+  let attempts = 1;
+  let xpEarned = 0;
+
+  if (existing) {
+    // Update existing attempt
+    attempts = existing.attempts + 1;
+    await prisma.challengeAttempt.update({
+      where: { id: existing.id },
+      data: {
+        attempts,
+        passed: passed || existing.passed, // Keep passed state if already passed
+        code,
+        updatedAt: new Date(),
+      },
+    });
+  } else {
+    // Create new attempt
+    await prisma.challengeAttempt.create({
+      data: {
+        userId,
+        projectSlug,
+        chapterSlug,
+        challengeSlug,
+        passed,
+        attempts: 1,
+        code,
+      },
+    });
+  }
+
+  // Award XP only on first successful completion
+  if (passed && (!existing || !existing.passed)) {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const newXp = (user?.xp || 0) + xpReward;
+    const newLevel = calculateLevel(newXp);
+
+    // Update streak
+    const today = new Date().toISOString().split("T")[0];
+    const lastActive = user?.lastActiveDate;
+    let newStreak = user?.streak || 0;
+
+    if (lastActive !== today) {
+      const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
+      if (lastActive === yesterday) {
+        newStreak += 1;
+      } else {
+        newStreak = 1;
+      }
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        xp: newXp,
+        level: newLevel,
+        streak: newStreak,
+        lastActiveDate: today,
+      },
+    });
+
+    xpEarned = xpReward;
+
+    // Check badges
+    const newBadges = await checkAndAwardBadges(userId, {
+      xp: newXp,
+      streak: newStreak,
+      completedChapters: await prisma.progress.count({ where: { userId, completed: true } }),
+      completedProjects: await countCompletedProjects(userId),
+      projectSlug,
+      completedAt: new Date(),
+    });
+
+    return {
+      success: true,
+      passed: true,
+      attempts,
+      xpEarned,
+      newBadges,
+    };
+  }
+
+  return {
+    success: true,
+    passed: passed || existing?.passed || false,
+    attempts,
+    xpEarned: 0,
+  };
+}
+
+/**
+ * Get all challenge attempts for a user, optionally filtered by project/chapter.
+ */
+export async function getChallengeAttempts(
+  userId: string,
+  projectSlug?: string,
+  chapterSlug?: string
+): Promise<{
+  challengeSlug: string;
+  projectSlug: string;
+  chapterSlug: string;
+  passed: boolean;
+  attempts: number;
+  code: string | null;
+  updatedAt: Date;
+}[]> {
+  const where: any = { userId };
+  if (projectSlug) where.projectSlug = projectSlug;
+  if (chapterSlug) where.chapterSlug = chapterSlug;
+
+  return prisma.challengeAttempt.findMany({
+    where,
+    orderBy: { updatedAt: "desc" },
+  });
+}
+
 export async function getProjectProgress(
   projectSlug: string,
   userId: string = DEFAULT_USER_ID

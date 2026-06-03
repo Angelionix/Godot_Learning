@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Moon, Sun, Menu, Gamepad2 } from "lucide-react";
+import { Moon, Sun, Menu, Gamepad2, Code } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { XpLevelBadge } from "@/components/gamification/xp-level-badge";
 const navLinks = [
   { href: "/", label: "Главная" },
   { href: "/learn", label: "Обучение" },
+  { href: "/playground", label: "Playground", icon: Code },
   { href: "/dashboard", label: "Дашборд" },
 ];
 
@@ -51,12 +52,13 @@ export function Header() {
                 key={link.href}
                 href={link.href}
                 className={cn(
-                  "px-3 py-2 rounded-md text-sm font-medium transition-colors",
+                  "px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5",
                   pathname === link.href
                     ? "bg-primary/10 text-primary"
                     : "text-muted-foreground hover:text-foreground hover:bg-muted"
                 )}
               >
+                {link.icon && <link.icon className="w-4 h-4" />}
                 {link.label}
               </Link>
             ))}
@@ -114,12 +116,13 @@ export function Header() {
                       href={link.href}
                       onClick={() => setMobileOpen(false)}
                       className={cn(
-                        "px-4 py-3 rounded-md text-sm font-medium transition-colors",
+                        "px-4 py-3 rounded-md text-sm font-medium transition-colors flex items-center gap-2",
                         pathname === link.href
                           ? "bg-primary/10 text-primary"
                           : "text-muted-foreground hover:text-foreground hover:bg-muted"
                       )}
                     >
+                      {link.icon && <link.icon className="w-4 h-4" />}
                       {link.label}
                     </Link>
                   ))}
