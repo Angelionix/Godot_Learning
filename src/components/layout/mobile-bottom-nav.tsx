@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, BookOpen, LayoutDashboard } from "lucide-react";
+import { Home, BookOpen, LayoutDashboard, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const mobileNavItems = [
   { href: "/", label: "Главная", icon: Home },
   { href: "/learn", label: "Обучение", icon: BookOpen },
   { href: "/dashboard", label: "Дашборд", icon: LayoutDashboard },
+  { href: "/profile", label: "Профиль", icon: User },
 ];
 
 export function MobileBottomNav() {

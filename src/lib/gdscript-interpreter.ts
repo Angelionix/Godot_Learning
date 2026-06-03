@@ -149,8 +149,8 @@ function transpileToJS(gdscript: string): string {
   // `push_warning(...)` → `console.warn(...)`
   js = js.replace(/\bpush_warning\s*\(/g, 'console.warn(');
 
-  // `range(start, end, step)` → `__range(start, end, step)`
-  js = js.replace(/\brange\s*\(/g, '__range(');
+  // NOTE: `range(start, end, step)` → `__range(start, end, step)` is done AFTER
+  // the for-loop transpilation below, to avoid conflicting with the for-loop regex.
 
   // `len(x)` → `x.length` (for arrays)
   // Skip — too complex to replace inline, provide as function
@@ -167,15 +167,17 @@ function transpileToJS(gdscript: string): string {
   // `abs(x)` → `Math.abs(x)`
   js = js.replace(/\babs\s*\(/g, 'Math.abs(');
 
-  // `clamp(value, min, max)` → `Math.min(Math.max(value, min), max)`
-  js = js.replace(/\bclamp\s*\(([^,]+),\s*([^,]+),\s*([^)]+)\)/g,
-    'Math.min(Math.max($1, $2), $3)');
-
   // `min(a, b)` → `Math.min(a, b)`
-  js = js.replace(/\bmin\s*\(/g, 'Math.min(');
+  js = js.replace(/(?<!Math\.)\bmin\s*\(/g, 'Math.min(');
 
   // `max(a, b)` → `Math.max(a, b)`
-  js = js.replace(/\bmax\s*\(/g, 'Math.max(');
+  js = js.replace(/(?<!Math\.)\bmax\s*\(/g, 'Math.max(');
+
+  // `clamp(value, min, max)` → `Math.min(Math.max(value, min), max)`
+  // Must come AFTER min/max replacements so the Math.min/Math.max in the output
+  // are not double-processed.
+  js = js.replace(/\bclamp\s*\(([^,]+),\s*([^,]+),\s*([^)]+)\)/g,
+    'Math.min(Math.max($1, $2), $3)');
 
   // `pow(a, b)` → `Math.pow(a, b)`
   js = js.replace(/\bpow\s*\(/g, 'Math.pow(');
@@ -249,8 +251,12 @@ function transpileToJS(gdscript: string): string {
   // `or` → `||`
   js = js.replace(/\bor\b/g, '||');
 
-  // `elif` → `else if`
-  js = js.replace(/^(\s*)elif\b/gm, '$1else if');
+  // `elif condition:` → `else if (condition) {`
+  // Must be done before the generic `if condition:` replacement
+  js = js.replace(
+    /^(\s*)elif\s+(.+):\s*$/gm,
+    '$1else if ($2) {'
+  );
 
   // `pass` → empty statement
   js = js.replace(/^(\s*)pass\s*$/gm, '$1/* pass */');
@@ -267,9 +273,28 @@ function transpileToJS(gdscript: string): string {
   // `$NodePath` → `null` (mock)
   js = js.replace(/\$\w[\w\/]*/g, '/* $node */ null');
 
+  // `for x in range(n):` → `for (let x of __range(0, n)) {`
+  // Must be done BEFORE the generic `range` → `__range` replacement
+  js = js.replace(
+    /^(\s*)for\s+(\w+)\s+in\s+range\s*\(([^)]+)\)\s*:/gm,
+    (match, indent, varName, rangeArgs) => {
+      return `${indent}for (let ${varName} of __range(${rangeArgs})) {`;
+    }
+  );
+
+  // `for x in array:` → `for (let x of array) {`
+  js = js.replace(
+    /^(\s*)for\s+(\w+)\s+in\s+(\w+)\s*:/gm,
+    '$1for (let $2 of $3) {'
+  );
+
+  // `range(start, end, step)` → `__range(start, end, step)`
+  // Must be done AFTER the for-loop transpilation above
+  js = js.replace(/\brange\s*\(/g, '__range(');
+
   // `func _ready():` → `function _ready() {`
   // `func name(params):` → `function name(params) {`
-  js = js.replace(/^(\s*)func\s+(\w+)\s*\(([^)]*)\)\s*(?::\s*[^=]+?)?\s*$/gm, (match, indent, name, params) => {
+  js = js.replace(/^(\s*)func\s+(\w+)\s*\(([^)]*)\)[^:\n]*:?\s*$/gm, (match, indent, name, params) => {
     // Convert GDScript params: `name: Type = default` → `name = default`
     const jsParams = params
       .split(',')
@@ -288,20 +313,6 @@ function transpileToJS(gdscript: string): string {
     return `${indent}function ${name}(${jsParams}) {`;
   });
 
-  // `for x in range(n):` → `for (let x of __range(0, n)) {`
-  js = js.replace(
-    /^(\s*)for\s+(\w+)\s+in\s+range\s*\(([^)]+)\)\s*:/gm,
-    (match, indent, varName, rangeArgs) => {
-      return `${indent}for (let ${varName} of __range(${rangeArgs})) {`;
-    }
-  );
-
-  // `for x in array:` → `for (let x of array) {`
-  js = js.replace(
-    /^(\s*)for\s+(\w+)\s+in\s+(\w+)\s*:/gm,
-    '$1for (let $2 of $3) {'
-  );
-
   // `while condition:` → `while (condition) {`
   js = js.replace(
     /^(\s*)while\s+(.+):\s*$/gm,
@@ -314,10 +325,11 @@ function transpileToJS(gdscript: string): string {
     '$1if ($2) {'
   );
 
-  // `else:` → `} else {`
+  // `else:` → `else {`
+  // The brace-closing algorithm will add the `}` for the previous block
   js = js.replace(
     /^(\s*)else\s*:\s*$/gm,
-    '$1} else {'
+    '$1else {'
   );
 
   // `match value:` → `switch (value) {`
@@ -349,8 +361,8 @@ function transpileToJS(gdscript: string): string {
     const currentIndent = line.length - line.trimStart().length;
     const prevIndent = indentStack[indentStack.length - 1];
 
-    // If we de-dented, close blocks
-    while (indentStack.length > 1 && currentIndent <= indentStack[indentStack.length - 1]) {
+    // If we de-dented (strictly less indent), close blocks
+    while (indentStack.length > 1 && currentIndent < indentStack[indentStack.length - 1]) {
       indentStack.pop();
       // Add closing brace at the previous indentation level
       const braceIndent = ' '.repeat(Math.max(0, indentStack[indentStack.length - 1]));

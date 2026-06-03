@@ -10,10 +10,30 @@ import {
   getAllProjects,
 } from '@/lib/content';
 import { db } from '@/lib/db';
+import type { Metadata } from 'next';
 
 export function generateStaticParams() {
   const projects = getAllProjects();
   return projects.map((p) => ({ project: p.projectSlug }));
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ project: string }>;
+}): Promise<Metadata> {
+  const { project: projectSlug } = await params;
+  const projectMeta = getProjectMeta(projectSlug);
+  if (!projectMeta) return {};
+
+  return {
+    title: projectMeta.title,
+    description: `${projectMeta.description} — Проект ${projectMeta.order}: ${projectMeta.difficulty}, ${projectMeta.language}.`,
+    openGraph: {
+      title: `${projectMeta.title} — Godot Learning`,
+      description: projectMeta.description,
+    },
+  };
 }
 
 export default async function ProjectPage({

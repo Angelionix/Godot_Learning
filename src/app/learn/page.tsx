@@ -5,6 +5,16 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { getAllProjects, type ProjectMeta } from '@/lib/content';
 import { db } from '@/lib/db';
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  title: 'Путь обучения',
+  description: 'Интерактивная карта из 6 проектов Godot: от Clicker/Idle на GDScript до 3D Adventure на C++. Проходи проекты по порядку и отслеживай прогресс.',
+  openGraph: {
+    title: 'Путь обучения — Godot Learning',
+    description: '6 проектов Godot от GDScript до C++: кликер, шутер, метроидвания, Tower Defense, 3D Adventure, Performance Demo.',
+  },
+};
 
 export default async function LearnPage() {
   const projects = getAllProjects();

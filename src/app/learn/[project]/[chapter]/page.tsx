@@ -30,6 +30,7 @@ import {
 import { extractHeadingsFromContent } from '@/lib/extract-headings';
 import { TableOfContentsWrapper } from './toc-wrapper';
 import { db } from '@/lib/db';
+import type { Metadata } from 'next';
 
 export function generateStaticParams() {
   const projects = getAllProjects();
@@ -40,6 +41,26 @@ export function generateStaticParams() {
     }
   }
   return params;
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ project: string; chapter: string }>;
+}): Promise<Metadata> {
+  const { project: projectSlug, chapter: chapterSlug } = await params;
+  const projectMeta = getProjectMeta(projectSlug);
+  const chapterContent = getChapterContent(projectSlug, chapterSlug);
+  if (!projectMeta || !chapterContent) return {};
+
+  return {
+    title: chapterContent.meta.title,
+    description: `${chapterContent.meta.title} — ${projectMeta.title}. Изучай Godot Engine: ${projectMeta.language}.`,
+    openGraph: {
+      title: `${chapterContent.meta.title} — Godot Learning`,
+      description: `${projectMeta.title}: ${chapterContent.meta.title}`,
+    },
+  };
 }
 
 const mdxComponents = {
