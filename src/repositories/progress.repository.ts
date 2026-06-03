@@ -3,8 +3,8 @@ import type { User, Badge, Progress } from "@/generated/prisma/client";
 
 const DEFAULT_USER_ID = "default-user";
 
-// XP values per chapter
-const XP_PER_CHAPTER = 50;
+// XP fallback if not provided by caller
+const XP_FALLBACK = 10;
 const XP_BONUS_PROJECT_COMPLETE = 200;
 
 // Level thresholds: level = floor(sqrt(xp / 100)) + 1
@@ -144,7 +144,8 @@ export async function getProgressForUser(
 export async function markChapterComplete(
   projectSlug: string,
   chapterSlug: string,
-  userId: string = DEFAULT_USER_ID
+  userId: string = DEFAULT_USER_ID,
+  xpReward: number = XP_FALLBACK
 ): Promise<{ success: boolean; xpEarned: number; newBadge?: { slug: string; name: string; description: string } }> {
   // Check if already completed
   const existing = await prisma.progress.findUnique({
@@ -173,7 +174,7 @@ export async function markChapterComplete(
     update: {
       completed: true,
       completedAt: new Date(),
-      xpEarned: XP_PER_CHAPTER,
+      xpEarned: xpReward,
     },
     create: {
       userId,
@@ -181,13 +182,13 @@ export async function markChapterComplete(
       chapterSlug,
       completed: true,
       completedAt: new Date(),
-      xpEarned: XP_PER_CHAPTER,
+      xpEarned: xpReward,
     },
   });
 
   // Update user XP and level
   const user = await prisma.user.findUnique({ where: { id: userId } });
-  const newXp = (user?.xp || 0) + XP_PER_CHAPTER;
+  const newXp = (user?.xp || 0) + xpReward;
   const newLevel = calculateLevel(newXp);
 
   // Update streak
@@ -308,7 +309,7 @@ export async function markChapterComplete(
     }
   }
 
-  return { success: true, xpEarned: XP_PER_CHAPTER, newBadge };
+  return { success: true, xpEarned: xpReward, newBadge };
 }
 
 export async function getProjectProgress(

@@ -6,6 +6,7 @@ import { z } from 'zod';
 export const markChapterCompleteSchema = z.object({
   projectSlug: z.string().min(1, 'Slug проекта обязателен'),
   chapterSlug: z.string().min(1, 'Slug главы обязателен'),
+  xp: z.number().int().min(0).max(1000).optional().default(0),
 });
 
 /**
@@ -36,6 +37,7 @@ export const challengeAttemptSchema = z.object({
 
 // Inferred types
 export type MarkChapterCompleteInput = z.infer<typeof markChapterCompleteSchema>;
+export type { MarkChapterCompleteInput as default };
 export type GetUserProgressInput = z.infer<typeof getUserProgressSchema>;
 export type GetProjectProgressInput = z.infer<typeof getProjectProgressSchema>;
 export type ChallengeAttemptInput = z.infer<typeof challengeAttemptSchema>;

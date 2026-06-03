@@ -17,14 +17,15 @@ const DEFAULT_USER_ID = "default-user";
 
 export async function markChapterCompleteAction(
   projectSlug: string,
-  chapterSlug: string
+  chapterSlug: string,
+  xp: number = 0
 ) {
   try {
     // Validate input with Zod
-    const input: MarkChapterCompleteInput = { projectSlug, chapterSlug };
+    const input: MarkChapterCompleteInput = { projectSlug, chapterSlug, xp };
     const validated = markChapterCompleteSchema.parse(input);
 
-    const result = await markChapterComplete(validated.projectSlug, validated.chapterSlug, DEFAULT_USER_ID);
+    const result = await markChapterComplete(validated.projectSlug, validated.chapterSlug, DEFAULT_USER_ID, validated.xp);
     return result;
   } catch (error) {
     if (error instanceof ZodError) {

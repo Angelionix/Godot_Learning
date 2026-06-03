@@ -130,3 +130,143 @@
     @apply font-sans;
   }
 }
+
+/* ─── Prose / Article typography overrides ─── */
+@layer components {
+  .prose {
+    --tw-prose-body: var(--foreground);
+    --tw-prose-headings: var(--foreground);
+    --tw-prose-lead: var(--muted-foreground);
+    --tw-prose-links: var(--color-godot-blue);
+    --tw-prose-bold: var(--foreground);
+    --tw-prose-counters: var(--muted-foreground);
+    --tw-prose-bullets: var(--muted-foreground);
+    --tw-prose-hr: var(--border);
+    --tw-prose-quotes: var(--foreground);
+    --tw-prose-quote-borders: var(--color-godot-blue);
+    --tw-prose-captions: var(--muted-foreground);
+    --tw-prose-code: var(--foreground);
+    --tw-prose-pre-code: #e5e7eb;
+    --tw-prose-pre-bg: #1e1e2e;
+    --tw-prose-th-borders: var(--border);
+    --tw-prose-td-borders: var(--border);
+  }
+
+  .dark .prose {
+    --tw-prose-body: oklch(0.88 0.01 250);
+    --tw-prose-headings: oklch(0.95 0.01 250);
+    --tw-prose-lead: oklch(0.65 0.02 250);
+    --tw-prose-links: oklch(0.62 0.12 240);
+    --tw-prose-bold: oklch(0.95 0.01 250);
+    --tw-prose-counters: oklch(0.55 0.02 250);
+    --tw-prose-bullets: oklch(0.55 0.02 250);
+    --tw-prose-hr: oklch(1 0 0 / 10%);
+    --tw-prose-quotes: oklch(0.88 0.01 250);
+    --tw-prose-quote-borders: oklch(0.62 0.12 240);
+    --tw-prose-captions: oklch(0.55 0.02 250);
+    --tw-prose-code: oklch(0.88 0.01 250);
+    --tw-prose-pre-code: #e5e7eb;
+    --tw-prose-pre-bg: #1e1e2e;
+    --tw-prose-th-borders: oklch(1 0 0 / 10%);
+    --tw-prose-td-borders: oklch(1 0 0 / 10%);
+  }
+
+  /* ─── Table styling ─── */
+  .prose table {
+    @apply w-full border-collapse text-sm;
+  }
+
+  .prose thead {
+    @apply border-b-2 border-[var(--color-godot-blue)]/40;
+  }
+
+  .prose thead th {
+    @apply px-3 py-2.5 text-left font-semibold text-foreground bg-muted/50;
+  }
+
+  .prose tbody tr {
+    @apply border-b border-border transition-colors hover:bg-muted/30;
+  }
+
+  .prose tbody td {
+    @apply px-3 py-2.5;
+  }
+
+  .prose tbody tr:last-child {
+    @apply border-b-0;
+  }
+
+  /* ─── Better code blocks ─── */
+  .prose pre {
+    @apply rounded-lg border border-border;
+  }
+
+  .prose pre code {
+    @apply text-sm;
+  }
+
+  .prose code:not(pre code) {
+    @apply rounded bg-muted px-1.5 py-0.5 text-sm font-medium text-godot-blue before:content-none after:content-none;
+  }
+
+  /* ─── Section dividers (hr → visual break) ─── */
+  .prose hr {
+    @apply my-10 border-t-2 border-dashed border-border;
+  }
+
+  /* ─── Headings visual hierarchy ─── */
+  .prose h2 {
+    @apply mt-10 mb-4 pb-2 border-b border-border text-xl;
+  }
+
+  .prose h3 {
+    @apply mt-8 mb-3 text-lg;
+  }
+
+  .prose h4 {
+    @apply mt-6 mb-2 text-base font-semibold;
+  }
+
+  /* ─── Lists with better spacing ─── */
+  .prose ul {
+    @apply my-4 space-y-1.5;
+  }
+
+  .prose ol {
+    @apply my-4 space-y-1.5;
+  }
+
+  .prose li {
+    @apply pl-1;
+  }
+
+  .prose li::marker {
+    @apply text-muted-foreground;
+  }
+
+  /* ─── Blockquotes ─── */
+  .prose blockquote {
+    @apply border-l-4 border-[var(--color-godot-blue)]/50 bg-muted/30 rounded-r-lg;
+  }
+
+  /* ─── Strong / emphasis ─── */
+  .prose strong {
+    @apply text-foreground font-semibold;
+  }
+
+  /* ─── Links ─── */
+  .prose a {
+    @apply underline decoration-[var(--color-godot-blue)]/40 underline-offset-2 transition-colors hover:decoration-[var(--color-godot-blue)];
+  }
+
+  /* ─── Paragraph spacing ─── */
+  .prose p {
+    @apply my-4 leading-7;
+  }
+
+  /* ─── First paragraph after h2/h3 ─── */
+  .prose h2 + p,
+  .prose h3 + p {
+    @apply mt-2;
+  }
+}

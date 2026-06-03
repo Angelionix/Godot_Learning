@@ -25,7 +25,7 @@ export function ChapterCompleteButton({
   async function handleComplete() {
     setIsLoading(true);
     try {
-      const result = await markChapterCompleteAction(projectSlug, chapterSlug);
+      const result = await markChapterCompleteAction(projectSlug, chapterSlug, xp);
       if (result.success) {
         setIsCompleted(true);
         setXpEarned(result.xpEarned);

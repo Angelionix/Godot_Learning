@@ -7,63 +7,17 @@ import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { useSidebarStore } from "@/store/sidebar-store";
 import { projects } from "@/lib/projects";
+import { getAllProjectChaptersMap } from "@/lib/chapter-data";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-
-// Chapter data loaded from content system - matches _meta.json slugs
-// This is generated from the content directory structure
-const projectChapters: Record<string, { slug: string; title: string }[]> = {
-  "project-1-clicker": [
-    { slug: "introduction", title: "Введение" },
-    { slug: "chapter-01-game-design", title: "Геймдизайн" },
-    { slug: "chapter-02-architecture", title: "Архитектура" },
-    { slug: "chapter-03-project-setup", title: "Настройка проекта" },
-    { slug: "chapter-04-gdscript-basics", title: "Основы GDScript" },
-    { slug: "chapter-05-implementation", title: "Реализация" },
-    { slug: "chapter-06-visual-effects", title: "Визуальные эффекты" },
-    { slug: "chapter-07-publishing", title: "Публикация и экспорт" },
-    { slug: "chapter-08-summary", title: "Итоги проекта" },
-  ],
-  "project-2-space-shooter": [
-    { slug: "introduction", title: "Введение" },
-    { slug: "chapter-01-game-design", title: "Геймдизайн" },
-    { slug: "chapter-02-architecture", title: "Архитектура" },
-    { slug: "chapter-03-project-setup", title: "Настройка проекта" },
-    { slug: "chapter-04-physics-basics", title: "Основы физики" },
-    { slug: "chapter-05-implementation", title: "Реализация" },
-    { slug: "chapter-06-shaders-vfx", title: "Шейдеры и VFX" },
-    { slug: "chapter-07-summary", title: "Итоги проекта" },
-  ],
-  "project-3-metroidvania": [
-    { slug: "introduction", title: "Введение" },
-    { slug: "chapter-01-game-design", title: "Геймдизайн" },
-    { slug: "chapter-02-architecture", title: "Архитектура" },
-    { slug: "chapter-03-implementation", title: "Реализация" },
-  ],
-  "project-4-tower-defense": [
-    { slug: "introduction", title: "Введение" },
-    { slug: "chapter-01-game-design", title: "Геймдизайн" },
-    { slug: "chapter-02-architecture", title: "Архитектура" },
-    { slug: "chapter-03-implementation", title: "Реализация" },
-  ],
-  "project-5-3d-adventure": [
-    { slug: "introduction", title: "Введение" },
-    { slug: "chapter-01-game-design", title: "Геймдизайн" },
-    { slug: "chapter-02-architecture", title: "Архитектура" },
-    { slug: "chapter-03-implementation", title: "Реализация" },
-  ],
-  "project-6-performance-demo": [
-    { slug: "introduction", title: "Введение" },
-    { slug: "chapter-01-game-design", title: "Геймдизайн" },
-    { slug: "chapter-02-architecture", title: "Архитектура" },
-    { slug: "chapter-03-implementation", title: "Реализация" },
-  ],
-};
 
 export function Sidebar() {
   const pathname = usePathname();
   const { isOpen, toggle } = useSidebarStore();
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+
+  // Load chapter data from shared module (syncs with _meta.json)
+  const projectChaptersMap = getAllProjectChaptersMap();
 
   // Only show sidebar on /learn routes
   const isLearnRoute = pathname.startsWith("/learn");
@@ -98,7 +52,7 @@ export function Sidebar() {
             </h2>
             <nav className="flex flex-col gap-0.5">
               {projects.map((project) => {
-                const chapters = projectChapters[project.slug] || [];
+                const chapters = projectChaptersMap[project.slug] || [];
                 const isExpanded = expandedProjects[project.slug];
                 const isActive = pathname.includes(project.slug);
 
