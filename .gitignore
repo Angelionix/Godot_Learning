@@ -33,23 +33,46 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.docker
+!.env.example
 
 # vercel
 .vercel
 
-
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local / runtime
 local-*
 .claude
 .z-ai-config
 *.log
 dev.log
 dev.out.log
+server.log
 test
 prompt
 
-server.log
+# database (generated locally)
+db/*.db
+
+# package manager — project uses bun
+package-lock.json
+
+# agent context (session artifacts)
+/agent-ctx/
+
+# download directory (screenshots, exports)
+/download/
+
+# worklog (agent session log)
+worklog.md
+
 # Skills directory
 /skills/
+
+# mini-services (unused)
+/mini-services/
+
+# examples (reference only)
+/examples/
