@@ -37,11 +37,39 @@
       "estimatedTime": 45
     },
     {
-      "slug": "chapter-03-implementation",
-      "title": "Глава 3: Код",
+      "slug": "chapter-03-project-setup",
+      "title": "Глава 3: Настройка проекта",
       "order": 3,
-      "xp": 30,
-      "estimatedTime": 200
+      "xp": 10,
+      "estimatedTime": 30
+    },
+    {
+      "slug": "chapter-04-managers-and-data",
+      "title": "Глава 4: Менеджеры и данные",
+      "order": 4,
+      "xp": 15,
+      "estimatedTime": 50
+    },
+    {
+      "slug": "chapter-05-fsm-and-states",
+      "title": "Глава 5: Конечный автомат",
+      "order": 5,
+      "xp": 15,
+      "estimatedTime": 45
+    },
+    {
+      "slug": "chapter-06-player-and-combat",
+      "title": "Глава 6: Игрок и бой",
+      "order": 6,
+      "xp": 20,
+      "estimatedTime": 60
+    },
+    {
+      "slug": "chapter-07-summary",
+      "title": "Глава 7: Итоги",
+      "order": 7,
+      "xp": 10,
+      "estimatedTime": 20
     }
   ],
   "cheatSheet": "cheat-sheet.mdx",

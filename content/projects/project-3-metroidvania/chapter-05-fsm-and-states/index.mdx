@@ -1,0 +1,593 @@
+---
+title: "Глава 5: Конечный автомат"
+project: "project-3-metroidvania"
+chapter: "chapter-05-fsm-and-states"
+order: 5
+xp: 15
+estimatedTime: 45
+tags: ["FSM", "Состояния", "Паттерн", "CharacterBody2D", "Платформер"]
+---
+
+
+## 5.1 Что такое конечный автомат (FSM)?
+
+Конечный автомат (Finite State Machine, FSM) — это паттерн проектирования, который управляет поведением объекта через чётко определённые состояния и переходы между ними. В контексте игрового персонажа это означает, что в каждый момент времени игрок находится ровно в одном состоянии: стоит, бежит, прыгает, атакует и т.д. Каждое состояние определяет свою логику обработки ввода и физики, а переходы между состояниями происходят по определённым условиям.
+
+Без FSM код игрока превращается в «спагетти» из бесконечных if-elif цепочек. С FSM каждое состояние инкапсулировано в свой класс, логика переходов прозрачна, а добавление нового состояния (например, «приседание») не требует изменения существующих состояний.
+
+<GoalsList>
+1. **Понять принцип FSM** и его преимущества для персонажа платформера
+2. **Реализовать базовый класс State** с интерфейсом enter/exit/physics_update/update
+3. **Создать PlayerState** с вспомогательными методами для состояний игрока
+4. **Реализовать StateMachine** — контейнер для управления переходами
+5. **Написать все 9 состояний** игрока: Idle, Run, Jump, Fall, Attack, Dash, Hurt, WallSlide, Dead
+6. **Понять приоритет проверок** и переменный прыжок
+</GoalsList>
+
+## 5.2 Базовый класс State
+
+Базовый класс State определяет интерфейс для всех состояний. Методы `enter()` и `exit()` вызываются при переходе в состояние и выходе из него — они используются для инициализации и очистки. Методы `physics_update()` и `update()` вызываются каждый кадр из StateMachine и содержат логику состояния. Сигнал `transition_requested` — это механизм перехода: состояние эмитит его с именем нового состояния, и StateMachine выполняет переход.
+
+```gdscript
+# state.gd — базовый класс состояния
+class_name State
+extends Node
+
+signal transition_requested(state_name: StringName)
+
+var character: CharacterBody2D
+
+func enter() -> void:
+    pass
+
+func exit() -> void:
+    pass
+
+func physics_update(_delta: float) -> void:
+    pass
+
+func update(_delta: float) -> void:
+    pass
+```
+
+Важно, что State наследует Node, а не RefCounted. Это позволяет размещать состояния как дочерние узлы StateMachine в дереве сцены, что даёт несколько преимуществ: состояния видны в редакторе, их можно настраивать через инспектор, и они автоматически освобождаются при удалении StateMachine.
+
+## 5.3 PlayerState
+
+PlayerState расширяет State, добавляя удобные свойства и методы для работы с игроком. Свойство `player` возвращает `character` с приведением типа к Player, а `input_dir` получает текущее направление ввода. Вспомогательные методы `can_attack()`, `can_dash()`, `can_jump()` инкапсулируют проверки, которые повторяются во многих состояниях: наличие ввода, прошёл ли кулдаун, разблокирована ли способность. Метод `apply_gravity()` применяет гравитацию, если игрок не на земле — это используется почти в каждом состоянии.
+
+```gdscript
+# player_state.gd — базовый класс для состояний игрока
+class_name PlayerState
+extends State
+
+var player: Player:
+    get: return character as Player
+
+var input_dir: float:
+    get: return Input.get_axis("move_left", "move_right")
+
+func can_attack() -> bool:
+    return Input.is_action_just_pressed("attack") and player.attack_cooldown.is_stopped()
+
+func can_dash() -> bool:
+    return Input.is_action_just_pressed("dash") and AbilityManager.has_ability(&"dash") and player.dash_cooldown.is_stopped()
+
+func can_jump() -> bool:
+    return Input.is_action_just_pressed("jump") and player.jump_count < player.max_jumps
+
+func apply_gravity(delta: float) -> void:
+    if not player.is_on_floor():
+        player.velocity.y += player.gravity * delta
+```
+
+<Insight title="Переменный прыжок — критическая механика платформера">
+Переменный прыжок (variable jump height) позволяет управлять высотой прыжка короткими и длинными нажатиями кнопки. Без него все прыжки одинаковой высоты — платформинг ощущается «деревянным» и неотзывчивым. Реализация проста: если игрок отпускает кнопку прыжка, пока движется вверх, вертикальная скорость уменьшается. Это одна из самых важных деталей, отличающих хороший платформер от посредственного.
+</Insight>
+
+## 5.4 StateMachine
+
+StateMachine — это контейнер для состояний, который управляет переключением между ними. При `_ready()` он собирает все дочерние узлы-состояния в словарь `states` (ключ — имя узла, значение — ссылка на State) и подключает их сигнал `transition_requested` к методу `_on_transition_requested`. Начальное состояние задаётся через @export в инспекторе.
+
+```gdscript
+# state_machine.gd — контейнер конечного автомата
+extends Node
+
+@export var initial_state: State
+var current_state: State
+var states: Dictionary = {}
+
+func _ready() -> void:
+    # Собираем все дочерние состояния в словарь
+    for child in get_children():
+        if child is State:
+            states[child.name] = child
+            child.transition_requested.connect(_on_transition_requested)
+            child.character = owner  # Owner = Player (корневой узел сцены)
+
+    current_state = initial_state
+    current_state.enter()
+
+func _physics_process(delta: float) -> void:
+    if current_state:
+        current_state.physics_update(delta)
+
+func _process(delta: float) -> void:
+    if current_state:
+        current_state.update(delta)
+
+func _on_transition_requested(state_name: StringName) -> void:
+    var new_state: State = states.get(state_name)
+    if new_state and new_state != current_state:
+        current_state.exit()
+        current_state = new_state
+        current_state.enter()
+```
+
+<Callout type="warning" title="Предотвращение повторного входа в состояние">
+Проверка `new_state != current_state` предотвращает повторный вход в то же состояние. Это важно: без этой проверки каждый кадр, когда игрок нажимает кнопку движения, состояние Run перезагружалось бы, сбрасывая анимацию и скорость. С этой проверкой StateMachine просто игнорирует запрос на переход в текущее состояние.
+</Callout>
+
+## 5.5 Диаграмма переходов
+
+Ниже показана текстовая диаграмма всех переходов между состояниями FSM. Каждая стрелка обозначает условие перехода.
+
+```
+                    ┌──────────────────────────────────────┐
+                    │         Приоритет проверок:           │
+                    │  1. Attack / Dash (боевые действия)  │
+                    │  2. Jump (прыжок)                    │
+                    │  3. Horizontal input (движение)      │
+                    │  4. Floor check (земля/воздух)       │
+                    │  5. Wall check (стена)               │
+                    └──────────────────────────────────────┘
+
+    ┌───────┐  move_input   ┌───────┐
+    │ Idle  │◄─────────────►│  Run  │
+    └───┬───┘               └───┬───┘
+        │                       │
+        │ jump / no_floor       │ jump / no_floor
+        ▼                       ▼
+    ┌───────┐  velocity.y > 0  ┌───────┐
+    │ Jump  │──────────────────►│ Fall  │
+    └───┬───┘                   └───┬───┘
+        │                           │
+        │ attack                    │ dash
+        ▼                           ▼
+    ┌────────┐                ┌────────┐
+    │ Attack │                │  Dash  │
+    └────────┘                └────────┘
+
+    ┌────────┐   wall + ability   ┌───────────┐
+    │  Fall  │───────────────────►│ WallSlide │
+    └────────┘                    └───────────┘
+
+    ┌────────┐   take_damage     ┌────────┐   health = 0   ┌──────┐
+    │  Any   │──────────────────►│  Hurt  │──────────────► │ Dead │
+    └────────┘                    └────────┘                └──────┘
+```
+
+## 5.6 Состояния игрока
+
+Ниже приведены все девять состояний FSM игрока. Каждое состояние наследует PlayerState и реализует методы `enter()`, `exit()` и `physics_update()`. Переходы между состояниями происходят через эмит сигнала `transition_requested`.
+
+### idle_state.gd
+
+Состояние покоя — базовое состояние, в котором игрок находится на земле без ввода направления. Из Idle можно перейти в Run, Jump, Attack, Dash, Fall или WallSlide.
+
+```gdscript
+# idle_state.gd — состояние покоя
+extends PlayerState
+
+func enter() -> void:
+    player.velocity.x = 0
+
+func physics_update(delta: float) -> void:
+    apply_gravity(delta)
+
+    # Проверки в порядке приоритета
+    if can_attack():
+        transition_requested.emit(&"Attack")
+        return
+    if can_dash():
+        transition_requested.emit(&"Dash")
+        return
+    if can_jump() and player.is_on_floor():
+        transition_requested.emit(&"Jump")
+        return
+    if input_dir != 0:
+        transition_requested.emit(&"Run")
+        return
+    if not player.is_on_floor():
+        if _is_on_wall() and AbilityManager.has_ability(&"wall_jump"):
+            transition_requested.emit(&"WallSlide")
+        else:
+            transition_requested.emit(&"Fall")
+        return
+
+    player.move_and_slide()
+
+func _is_on_wall() -> bool:
+    return player.is_on_wall() and input_dir != 0
+```
+
+<Callout type="tip" title="Порядок проверок критически важен">
+Атака и рывок проверяются раньше движения, чтобы игрок мог атаковать даже при зажатой клавише движения. Прыжок проверяется раньше Fall, чтобы игрок мог прыгнуть в тот же кадр, когда достиг земли. `move_and_slide()` вызывается в конце, после всех проверок, чтобы применить гравитацию и коллизии. Изменение порядка проверок приведёт к «проглатыванию» ввода — например, если поставить движение раньше атаки, игрок не сможет атаковать при зажатой клавише движения.
+</Callout>
+
+### run_state.gd
+
+Состояние бега — игрок движется горизонтально по земле. Горизонтальная скорость устанавливается как `input_dir * run_speed`, а вертикальная — управляется гравитацией.
+
+```gdscript
+# run_state.gd — состояние бега
+extends PlayerState
+
+func physics_update(delta: float) -> void:
+    apply_gravity(delta)
+    player.velocity.x = input_dir * player.run_speed
+
+    if can_attack():
+        transition_requested.emit(&"Attack")
+    elif can_dash():
+        transition_requested.emit(&"Dash")
+    elif can_jump() and player.is_on_floor():
+        transition_requested.emit(&"Jump")
+    elif input_dir == 0:
+        transition_requested.emit(&"Idle")
+    elif not player.is_on_floor():
+        if player.is_on_wall() and input_dir != 0 and AbilityManager.has_ability(&"wall_jump"):
+            transition_requested.emit(&"WallSlide")
+        else:
+            transition_requested.emit(&"Fall")
+
+    player.move_and_slide()
+```
+
+### jump_state.gd
+
+Состояние прыжка — игрок находится в воздухе после отрыва от земли. При входе увеличивается `jump_count` и устанавливается `velocity.y = jump_velocity`. Переменный прыжок реализован через проверку отпускания кнопки: если игрок отпускает кнопку прыжка, пока движется вверх, вертикальная скорость уменьшается вдвое.
+
+```gdscript
+# jump_state.gd — состояние прыжка
+extends PlayerState
+
+func enter() -> void:
+    player.jump_count += 1
+    player.velocity.y = player.jump_velocity
+
+func physics_update(delta: float) -> void:
+    apply_gravity(delta)
+    player.velocity.x = input_dir * player.run_speed
+
+    # Переменный прыжок: отпускание кнопки уменьшает высоту
+    if Input.is_action_just_released("jump") and player.velocity.y < 0:
+        player.velocity.y *= 0.5
+
+    if can_dash():
+        transition_requested.emit(&"Dash")
+    elif player.velocity.y > 0:
+        # Начали падать
+        if player.is_on_wall() and input_dir != 0 and AbilityManager.has_ability(&"wall_jump"):
+            transition_requested.emit(&"WallSlide")
+        else:
+            transition_requested.emit(&"Fall")
+    elif player.is_on_floor():
+        # Приземлились
+        player.jump_count = 0
+        if input_dir != 0:
+            transition_requested.emit(&"Run")
+        else:
+            transition_requested.emit(&"Idle")
+
+    player.move_and_slide()
+```
+
+<Insight title="Почему 0.5 — хороший множитель для переменного прыжка">
+Умножение на 0.5 при отпускании кнопки — эмпирически подобранное значение, которое даёт отличный контроль. Короткое нажатие даёт прыжок примерно 25% от максимальной высоты, длинное — 100%. Множитель 0.3 слишком агрессивен (минимальный прыжок почти незаметен), а 0.7 слишком мягок (все прыжки ощущаются одинаковыми). Если хотите больше контроля, можно заменить константу на `@export var jump_cut_multiplier: float = 0.5`.
+</Insight>
+
+### fall_state.gd
+
+Состояние падения — игрок находится в воздухе и движется вниз. Это состояние активируется, когда игрок сходит с платформы без прыжка или после пика прыжка.
+
+```gdscript
+# fall_state.gd — состояние падения
+extends PlayerState
+
+func enter() -> void:
+    pass
+
+func physics_update(delta: float) -> void:
+    apply_gravity(delta)
+    player.velocity.x = input_dir * player.run_speed
+
+    if can_dash():
+        transition_requested.emit(&"Dash")
+    elif player.is_on_floor():
+        player.jump_count = 0
+        if input_dir != 0:
+            transition_requested.emit(&"Run")
+        else:
+            transition_requested.emit(&"Idle")
+    elif player.is_on_wall() and input_dir != 0 and AbilityManager.has_ability(&"wall_jump"):
+        transition_requested.emit(&"WallSlide")
+
+    player.move_and_slide()
+```
+
+### attack_state.gd
+
+Состояние атаки — игрок выполняет удар ближнего боя. При входе включается Hitbox и запускается кулдаун атаки. Атака длится 0.3 секунды, после чего Hitbox отключается и происходит переход. Во время атаки игрок не может двигаться горизонтально, но продолжает подвергаться гравитации — это делает воздушные атаки возможными, но ограниченными.
+
+```gdscript
+# attack_state.gd — состояние атаки
+extends PlayerState
+
+var _attack_finished: bool = false
+
+func enter() -> void:
+    _attack_finished = false
+    player.velocity.x = 0
+    # Включаем hitbox (CollisionShape2D)
+    player.hitbox.get_child(0).disabled = false
+    player.attack_cooldown.start()
+    # Таймер окончания атаки
+    get_tree().create_timer(0.3).timeout.connect(_on_attack_finished)
+
+func exit() -> void:
+    # Всегда отключаем hitbox при выходе из состояния
+    player.hitbox.get_child(0).disabled = true
+    _attack_finished = false
+
+func physics_update(delta: float) -> void:
+    apply_gravity(delta)
+
+    if _attack_finished:
+        if not player.is_on_floor():
+            transition_requested.emit(&"Fall")
+        elif input_dir != 0:
+            transition_requested.emit(&"Run")
+        else:
+            transition_requested.emit(&"Idle")
+
+    player.move_and_slide()
+
+func _on_attack_finished() -> void:
+    _attack_finished = true
+```
+
+<Callout type="info" title="Отключение Hitbox в exit(), а не по таймеру">
+Отключение Hitbox происходит в `exit()`, а не по таймеру. Это гарантирует, что Hitbox всегда отключается при выходе из состояния, даже если переход происходит по другой причине (например, игрок получил урон во время атаки). Без этого Hitbox мог бы остаться включённым, и игрок наносил бы урон без анимации атаки.
+</Callout>
+
+### dash_state.gd
+
+Состояние рывка — игрок мгновенно перемещается в направлении взгляда. Это критически важная механика для метроидвании, которая позволяет пересекать широкие пропасти и уклоняться от атак. Во время рывка игрок не подвергается гравитации, становится неуязвимым и проходит сквозь врагов. После рывка скорость резко снижается, создавая ощущение инерции.
+
+```gdscript
+# dash_state.gd — состояние рывка
+extends PlayerState
+
+var dash_speed: float = 600.0
+var dash_duration: float = 0.15
+var dash_timer: float = 0.0
+var _original_mask: int
+
+func enter() -> void:
+    dash_timer = dash_duration
+    player.velocity.y = 0
+    player.velocity.x = dash_speed * player.facing_direction
+    # Сохраняем маску коллизий и убираем столкновение с врагами
+    _original_mask = player.collision_mask
+    player.set_collision_mask_value(3, false)  # Слой 3 = враги
+    player.invincible = true
+    player.dash_cooldown.start()
+
+func exit() -> void:
+    # Восстанавливаем коллизии и снимаем неуязвимость
+    player.collision_mask = _original_mask
+    player.velocity.x *= 0.3  # Замедление после рывка (инерция)
+    player.invincible = false
+
+func physics_update(delta: float) -> void:
+    dash_timer -= delta
+    player.velocity.y = 0  # Без гравитации во время рывка
+
+    if dash_timer <= 0:
+        if player.is_on_floor():
+            transition_requested.emit(&"Idle")
+        else:
+            transition_requested.emit(&"Fall")
+
+    player.move_and_slide()
+```
+
+<Callout type="danger" title="Не используйте set_physics_process(false) в состояниях!">
+Никогда не отключайте `_physics_process` в состояниях FSM — это нарушит работу автомата, потому что `physics_update` перестанет вызываться, и состояние никогда не переключится обратно. Используйте флаги (как `dash_timer`) для управления логикой внутри состояния.
+</Callout>
+
+### hurt_state.gd
+
+Состояние получения урона — игрок был атакован и откидывается назад. Горизонтальная скорость постепенно уменьшается (коэффициент 0.9 каждый кадр), имитируя затухание knockback. Длительность — 0.4 секунды. Если здоровье упало до нуля — переход в Dead. При входе запускается неуязвимость на 1 секунду.
+
+```gdscript
+# hurt_state.gd — состояние получения урона
+extends PlayerState
+
+var hurt_duration: float = 0.4
+var hurt_timer: float = 0.0
+
+func enter() -> void:
+    hurt_timer = hurt_duration
+    player.is_hurt = true
+    player.start_invincibility(1.0)
+
+func exit() -> void:
+    player.is_hurt = false
+
+func physics_update(delta: float) -> void:
+    hurt_timer -= delta
+    # Замедление во время получения урона (затухание knockback)
+    player.velocity.x *= 0.9
+    apply_gravity(delta)
+
+    if hurt_timer <= 0:
+        if player.health <= 0:
+            transition_requested.emit(&"Dead")
+        elif not player.is_on_floor():
+            transition_requested.emit(&"Fall")
+        elif input_dir != 0:
+            transition_requested.emit(&"Run")
+        else:
+            transition_requested.emit(&"Idle")
+
+    player.move_and_slide()
+```
+
+### wall_slide_state.gd
+
+Состояние скольжения по стене — игрок медленно скользит вниз по стене, удерживая направление к ней. Доступно только после разблокировки способности Wall Jump. Во время скольжения вертикальная скорость фиксируется на `wall_slide_speed` (50 пикс/сек), что значительно медленнее обычного падения. При нажатии кнопки прыжка выполняется Wall Jump: игрок отталкивается от стены.
+
+```gdscript
+# wall_slide_state.gd — состояние скольжения по стене
+extends PlayerState
+
+var wall_slide_speed: float = 50.0  # Медленное падение
+var wall_jump_force_x: float = 300.0
+var wall_jump_force_y: float = -380.0
+
+func enter() -> void:
+    player.velocity.y = 0
+
+func physics_update(delta: float) -> void:
+    # Замедленное падение вдоль стены
+    if player.velocity.y > 0:
+        player.velocity.y = wall_slide_speed
+
+    # Wall Jump — отталкивание от стены
+    if Input.is_action_just_pressed("jump"):
+        var wall_dir: float = -1 if player.get_wall_normal().x > 0 else 1
+        player.velocity.x = wall_jump_force_x * wall_dir
+        player.velocity.y = wall_jump_force_y
+        player.jump_count = 1  # Для двойного прыжка после wall jump
+        player.facing_direction = wall_dir
+        transition_requested.emit(&"Jump")
+        return
+
+    if can_dash():
+        transition_requested.emit(&"Dash")
+        return
+
+    # Проверяем, всё ещё на стене
+    if not player.is_on_wall() or player.is_on_floor():
+        player.jump_count = 0
+        if player.is_on_floor():
+            if input_dir != 0:
+                transition_requested.emit(&"Run")
+            else:
+                transition_requested.emit(&"Idle")
+        else:
+            transition_requested.emit(&"Fall")
+
+    player.move_and_slide()
+```
+
+Определение направления отталкивания использует `get_wall_normal()`: если нормаль стены направлена вправо (стена слева), игрок отталкивается влево; если нормаль направлена влево (стена справа) — вправо. Установка `jump_count = 1` после Wall Jump позволяет совершить двойной прыжок в воздухе, что открывает доступ к высоким платформам, недостижимым обычным Wall Jump.
+
+### dead_state.gd
+
+Состояние смерти — игрок погиб. При входе отключается физическая обработка, эмитится сигнал `player_died`, и через 1.5 секунды вызывается загрузка последнего сохранения. Это терминальное состояние — единственный выход из него через загрузку сохранения.
+
+```gdscript
+# dead_state.gd — состояние смерти
+extends PlayerState
+
+func enter() -> void:
+    player.velocity = Vector2.ZERO
+    player.set_physics_process(false)
+    GameManager.player_died.emit()
+    # Экран смерти и автозагрузка сохранения
+    get_tree().create_timer(1.5).timeout.connect(_on_death_animation_finished)
+
+func exit() -> void:
+    player.set_physics_process(true)
+
+func physics_update(_delta: float) -> void:
+    pass  # Нет физики в мёртвом состоянии
+
+func _on_death_animation_finished() -> void:
+    SaveManager.load_game()
+```
+
+<Challenge
+  title="Wall Slide"
+  difficulty="easy"
+  starterCode="# wall_slide_state.gd
+extends PlayerState
+
+# Задание: реализуйте скольжение по стене
+# 1. При входе обнулите вертикальную скорость
+# 2. В physics_update: ограничьте скорость падения wall_slide_speed
+# 3. При нажатии jump: оттолкнитесь от стены (wall jump)
+# 4. Проверяйте, всё ли ещё на стене
+
+var wall_slide_speed: float = 50.0
+var wall_jump_force_x: float = 300.0
+var wall_jump_force_y: float = -380.0
+
+func enter() -> void:
+    pass  # TODO
+
+func physics_update(delta: float) -> void:
+    pass  # TODO"
+  solutionCode="# wall_slide_state.gd
+extends PlayerState
+
+var wall_slide_speed: float = 50.0
+var wall_jump_force_x: float = 300.0
+var wall_jump_force_y: float = -380.0
+
+func enter() -> void:
+    player.velocity.y = 0
+
+func physics_update(delta: float) -> void:
+    # Замедленное падение вдоль стены
+    if player.velocity.y > 0:
+        player.velocity.y = wall_slide_speed
+
+    # Wall Jump — отталкивание от стены
+    if Input.is_action_just_pressed('jump'):
+        var wall_dir: float = -1 if player.get_wall_normal().x > 0 else 1
+        player.velocity.x = wall_jump_force_x * wall_dir
+        player.velocity.y = wall_jump_force_y
+        player.jump_count = 1  # Для двойного прыжка после wall jump
+        player.facing_direction = wall_dir
+        transition_requested.emit(&'Jump')
+        return
+
+    if can_dash():
+        transition_requested.emit(&'Dash')
+        return
+
+    # Проверяем, всё ещё на стене
+    if not player.is_on_wall() or player.is_on_floor():
+        player.jump_count = 0
+        if player.is_on_floor():
+            if input_dir != 0:
+                transition_requested.emit(&'Run')
+            else:
+                transition_requested.emit(&'Idle')
+        else:
+            transition_requested.emit(&'Fall')
+
+    player.move_and_slide()"
+  testCases='[{"input":"Игрок у стены, нажата клавиша к стене","expected":"velocity.y ограничена wall_slide_speed (50.0)"},{"input":"Игрок скользит по стене, нажат jump","expected":"Отталкивание от стены, переход в Jump"},{"input":"Игрок отошёл от стены","expected":"Переход в Fall"}]'
+  xp={10}
+>
+Реализуйте состояние Wall Slide: замедленное падение вдоль стены и отталкивание (Wall Jump) при нажатии кнопки прыжка. Используйте `player.get_wall_normal()` для определения направления отталкивания.
+</Challenge>
+
+---
+
+В следующей главе мы объединим FSM с полным скриптом игрока и реализуем боевую систему: Hitbox/Hurtbox, числа урона, knockback, кадры неуязвимости и босс Хранитель.

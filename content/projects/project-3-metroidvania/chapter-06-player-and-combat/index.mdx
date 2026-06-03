@@ -1,0 +1,652 @@
+---
+title: "Глава 6: Игрок и бой"
+project: "project-3-metroidvania"
+chapter: "chapter-06-player-and-combat"
+order: 6
+xp: 20
+estimatedTime: 60
+tags: ["Player", "Hitbox", "Hurtbox", "Комбо", "Босс", "Knockback"]
+---
+
+
+## 6.1 Центральный скрипт игрока
+
+Скрипт Player — это ядро нашего персонажа. Он хранит здоровье, скорость, направление взгляда, ссылки на дочерние узлы и обрабатывает получение урона. Состояния FSM (реализованные в Главе 5) обращаются к свойствам Player через переменную `player`, унаследованную от PlayerState. Важно, что Player не управляет своими состояниями напрямую — это делает StateMachine через сигналы. Player лишь предоставляет API, который состояния используют.
+
+<GoalsList>
+1. **Реализовать полный скрипт Player.gd** со свойствами и методами
+2. **Понять систему Hitbox/Hurtbox** и разделение зон атаки и уязвимости
+3. **Реализовать числа урона** — всплывающий текст при нанесении урона
+4. **Реализовать knockback** — отбрасывание при получении урона
+5. **Реализовать кадры неуязвимости** — мигание спрайта после получения урона
+6. **Создать снаряды** — атака на расстоянии (gated by ability)
+7. **Реализовать базового врага** и босса Хранителя с 3 фазами
+</GoalsList>
+
+## 6.2 Player.gd — полный скрипт
+
+```gdscript
+# player.gd — основной скрипт игрока
+class_name Player
+extends CharacterBody2D
+
+signal health_changed(current: int, maximum: int)
+signal died
+
+# Экспортируемые параметры (настраиваются в инспекторе)
+@export var run_speed: float = 200.0
+@export var jump_velocity: float = -400.0
+@export var gravity: float = 980.0
+@export var attack_damage: int = 1
+@export var projectile_damage: int = 2
+@export var projectile_scene: PackedScene
+@export var damage_number_scene: PackedScene
+@export var max_health: int = 5:
+    set(value):
+        max_health = value
+        health_changed.emit(health, max_health)
+
+# Здоровье с setter — автоматически эмитит сигнал при изменении
+var health: int = 5:
+    set(value):
+        health = clampi(value, 0, max_health)
+        health_changed.emit(health, max_health)
+        if health == 0:
+            died.emit()
+
+# Счётчик прыжков (для двойного прыжка)
+var jump_count: int = 0
+var max_jumps: int:
+    get: return 2 if AbilityManager.has_ability(&"double_jump") else 1
+
+# Флаги состояний
+var is_hurt: bool = false
+var invincible: bool = false
+var facing_direction: float = 1.0  # 1 = вправо, -1 = влево
+
+# Ссылки на дочерние узды
+@onready var sprite: AnimatedSprite2D = $Sprite2D
+@onready var state_machine: Node = $StateMachine
+@onready var hurtbox: Area2D = $Hurtbox
+@onready var hitbox_pivot: Node2D = $HitboxPivot
+@onready var hitbox: Area2D = $HitboxPivot/Hitbox
+@onready var attack_cooldown: Timer = $HitboxPivot/AttackCooldown
+@onready var dash_cooldown: Timer = $DashCooldown
+@onready var camera: Camera2D = $Camera2D
+@onready var anim_tree: AnimationTree = $AnimationTree
+@onready var projectile_spawn: Marker2D = $ProjectileSpawn
+
+func _ready() -> void:
+    # Регистрируем игрока в GameManager
+    GameManager.register_player(self)
+    # Подключаем сигналы Hitbox/Hurtbox
+    hurtbox.area_entered.connect(_on_hurtbox_area_entered)
+    hitbox.area_entered.connect(_on_hitbox_area_entered)
+
+func _physics_process(_delta: float) -> void:
+    # Обновляем направление взгляда
+    if input_dir != 0:
+        facing_direction = signf(input_dir)
+        sprite.flip_h = input_dir < 0
+        hitbox_pivot.scale.x = -1 if input_dir < 0 else 1
+
+# Направление ввода (вычисляется каждый кадр)
+var input_dir: float:
+    get: return Input.get_axis("move_left", "move_right")
+```
+
+<Callout type="tip" title="Паттерн setter для здоровья">
+Setter для `health` использует `clampi`, чтобы здоровье не уходило за пределы [0, max_health], и эмитит сигнал `health_changed` при каждом изменении. Это гарантирует, что HUD всегда актуален, даже если здоровье изменяется из разных мест кода. Проверка `health == 0` внутри setter обеспечивает немедленную эмить сигнала `died`, независимо от источника урона. Аналогичный setter для `max_health` гарантирует, что HUD обновится и при увеличении максимального здоровья.
+</Callout>
+
+## 6.3 Система Hitbox/Hurtbox
+
+Система Hitbox/Hurtbox — это основа боевой механики. Она разделяет зоны атаки и зоны получения урона, позволяя гибко управлять тем, кто атакует, кто получает урон, и когда это происходит. Это не встроенный механизм Godot — мы реализуем его поверх Area2D.
+
+<Insight title="Почему Hitbox и Hurtbox разделены">
+Разделение Hitbox и Hurtbox решает ключевую проблему: один и тот же объект может и наносить урон, и получать его. Если бы мы использовали одну Area2D для всего, игрок наносил бы урон самому себе при каждой атаке. С разделением: Hitbox игрока проверяет столкновение только с Hurtbox врагов (слой 3), а Hurtbox игрока проверяет столкновение только с Hitbox врагов (слой 3). Благодаря настройке слоёв столкновений из Главы 3, пересечения между одноимёнными зонами невозможны.
+</Insight>
+
+**Hitbox** — это Area2D, которая активно наносит урон при пересечении с Hurtbox противника. У игрока Hitbox включается только во время атаки (0.3 сек), у врагов — постоянно (контактный урон) или во время анимации атаки.
+
+**Hurtbox** — это Area2D, которая пассивно принимает урон от Hitbox. Hurtbox всегда активна — объект всегда уязвим, если не находится в состоянии неуязвимости.
+
+### Обработчики столкновений
+
+```gdscript
+# (продолжение player.gd)
+
+# Hurtbox игрока обнаружила вражеский Hitbox
+func _on_hurtbox_area_entered(area: Area2D) -> void:
+    # Проверяем, что это Hitbox врага, а не наш собственный
+    if not area.is_in_group("hitbox") or area.get_parent() == self:
+        return
+    var damage: int = area.damage if "damage" in area else 1
+    take_damage(damage, area.global_position)
+
+# Hitbox игрока обнаружила вражеский Hurtbox
+func _on_hitbox_area_entered(area: Area2D) -> void:
+    if not area.is_in_group("hurtbox"):
+        return
+    var target: Node2D = area.get_parent()
+    if target.has_method("take_damage"):
+        var damage: int = attack_damage
+        target.take_damage(damage, hitbox.global_position)
+        spawn_damage_number(damage, target.global_position)
+```
+
+Важный момент: проверка `area.get_parent() == self` в Hurtbox-обработчике предотвращает «самоубийство» — если бы Hitbox и Hurtbox игрока находились на одном слое, игрок наносил бы урон самому себе. Но даже без этой проверки правильная настройка слоёв столкновений исключает пересечение одноимённых зон.
+
+## 6.4 Получение урона и Knockback
+
+Метод `take_damage` — это точка входа для всей системы получения урона. Он проверяет неуязвимость, уменьшает здоровье, применяет knockback и переключает FSM в состояние Hurt.
+
+```gdscript
+# (продолжение player.gd)
+
+func take_damage(amount: int, source_pos: Vector2) -> void:
+    # Проверяем неуязвимость
+    if invincible or is_hurt:
+        return
+    # Уменьшаем здоровье (setter автоматически эмитит сигнал)
+    health -= amount
+    # Применяем отбрасывание от источника урона
+    apply_knockback(source_pos, 250.0)
+    # Переключаем FSM в состояние Hurt
+    state_machine._on_transition_requested(&"Hurt")
+
+func apply_knockback(source_pos: Vector2, force: float) -> void:
+    # Направление = от источника урона к игроку
+    var direction: Vector2 = (global_position - source_pos).normalized()
+    velocity = direction * force
+```
+
+Knockback вычисляется как вектор от источника урона к позиции игрока, нормализованный и умноженный на силу. Это создаёт естественное ощущение: если враг атакует слева, игрока отбрасывает вправо. Сила 250.0 обеспечивает заметное, но не чрезмерное отбрасывание.
+
+## 6.5 Кадры неуязвимости (Invincibility Frames)
+
+После получения урона игрок получает кратковременную неуязвимость (1 секунда по умолчанию). В это время спрайт мигает, показывая игроку, что он временно защищён. Это предотвращает потерю всего здоровья за одно столкновение и даёт время на реакцию.
+
+```gdscript
+# (продолжение player.gd)
+
+func start_invincibility(duration: float = 1.0) -> void:
+    invincible = true
+    # Мигание спрайта через Tween
+    var tween: Tween = create_tween()
+    tween.tween_property(sprite, "modulate:a", 0.3, 0.1)
+    tween.tween_property(sprite, "modulate:a", 1.0, 0.1)
+    tween.set_loops(int(duration / 0.2))
+    tween.finished.connect(func(): invincible = false; sprite.modulate.a = 1.0)
+```
+
+Мигание реализовано через Tween: прозрачность спрайта чередуется между 0.3 и 1.0 каждые 0.2 секунды. Это классический визуальный паттерн из ретро-игр, который интуитивно понятен игроку. После завершения мигания флаг `invincible` сбрасывается и спрайт возвращается к полной непрозрачности.
+
+## 6.6 Числа урона
+
+Числа урона — это всплывающий текст, который появляется над целью при нанесении урона. Они дают моментальную визуальную обратную связь и позволяют игроку оценить эффективность своих атак.
+
+```gdscript
+# (продолжение player.gd)
+
+func spawn_damage_number(amount: int, pos: Vector2) -> void:
+    if not damage_number_scene:
+        return
+    var dmg_num: Label = damage_number_scene.instantiate()
+    get_parent().add_child(dmg_num)
+    dmg_num.show_damage(amount, pos)
+```
+
+Сцена числа урона — это Label с анимацией подъёма и затухания. Реализация `show_damage`:
+
+```gdscript
+# damage_number.gd — всплывающее число урона
+extends Label
+
+func show_damage(amount: int, spawn_pos: Vector2) -> void:
+    global_position = spawn_pos - Vector2(10, 20)
+    text = str(amount)
+    # Анимация подъёма и затухания
+    var tween: Tween = create_tween()
+    tween.set_parallel(true)
+    tween.tween_property(self, "position:y", position.y - 40, 0.8)
+    tween.tween_property(self, "modulate:a", 0.0, 0.8)
+    tween.chain().tween_callback(queue_free)
+```
+
+Число поднимается на 40 пикселей и затухает за 0.8 секунды, после чего автоматически удаляется из дерева. Цвет текста можно менять в зависимости от типа урона: белый для обычного, красный для критического, зелёный для исцеления.
+
+## 6.7 Система снарядов
+
+Снаряды — это атака дальнего боя, доступная только после разблокировки способности «projectile». Это типичный gated mechanic в метроидвании: способность открывает и новые области (разрушение хрупких стен), и новые боевые возможности (атака летающих врагов).
+
+```gdscript
+# (продолжение player.gd)
+
+func shoot_projectile() -> void:
+    # Проверяем, разблокирована ли способность
+    if not AbilityManager.has_ability(&"projectile"):
+        return
+    if not projectile_scene:
+        return
+    var bullet: Area2D = projectile_scene.instantiate()
+    bullet.global_position = projectile_spawn.global_position
+    bullet.direction = Vector2(facing_direction, 0)
+    bullet.damage = projectile_damage
+    get_parent().add_child(bullet)
+    AudioManager.play_sfx("shoot")
+```
+
+Снаряд добавляется как дочерний узел родителя игрока (комнаты), а не самого игрока. Это важно: если добавить снаряд как дочерний узел Player, он будет двигаться вместе с игроком, что выглядит неестественно.
+
+```gdscript
+# projectile.gd — снаряд
+extends Area2D
+
+var direction: Vector2 = Vector2.RIGHT
+var speed: float = 400.0
+var damage: int = 2
+var lifetime: float = 2.0
+
+func _physics_process(delta: float) -> void:
+    position += direction * speed * delta
+    lifetime -= delta
+    if lifetime <= 0:
+        queue_free()
+
+func _on_body_entered(body: Node2D) -> void:
+    if body.is_in_group("hurtbox"):
+        var target: Node2D = body.get_parent()
+        if target.has_method("take_damage"):
+            target.take_damage(damage, global_position)
+    queue_free()
+```
+
+## 6.8 Исцеление
+
+```gdscript
+# (продолжение player.gd)
+
+func heal_full() -> void:
+    health = max_health
+```
+
+Казалось бы, тривиальный метод, но благодаря setter для `health` он автоматически эмитит `health_changed` с максимальным значением, что обновляет HUD.
+
+## 6.9 Базовый скрипт врага
+
+Базовый скрипт врага реализует упрощённый FSM на основе enum и match. Это оправдано, потому что враги имеют меньше состояний и менее сложную логику переходов, чем игрок. Каждый враг получает ссылку на игрока через `GameManager.player` и использует её для определения расстояния и направления преследования.
+
+```gdscript
+# enemy_base.gd — базовый скрипт врага
+extends CharacterBody2D
+
+signal died(enemy_id: String)
+
+@export var data: EnemyData
+@export var enemy_id: String = ""
+
+enum State { PATROL, CHASE, ATTACK, HURT, DEAD }
+
+var current_state: State = State.PATROL
+var health: int = 2
+var patrol_direction: float = 1.0
+var _player: Node2D
+var _gravity: float = 980.0
+
+@onready var hurtbox: Area2D = $Hurtbox
+@onready var hitbox: Area2D = $Hitbox
+@onready var sprite: AnimatedSprite2D = $Sprite2D
+@onready var detection_area: Area2D = $DetectionArea
+
+func _ready() -> void:
+    if data:
+        health = data.max_health
+    hurtbox.area_entered.connect(_on_hurtbox_area_entered)
+    detection_area.body_entered.connect(_on_detection_body_entered)
+    detection_area.body_exited.connect(_on_detection_body_exited)
+
+func _physics_process(delta: float) -> void:
+    match current_state:
+        State.PATROL:
+            _patrol(delta)
+        State.CHASE:
+            _chase(delta)
+        State.ATTACK:
+            _attack(delta)
+        State.HURT:
+            _hurt(delta)
+        State.DEAD:
+            pass
+
+func _patrol(delta: float) -> void:
+    if not is_on_floor():
+        velocity.y += _gravity * delta
+    velocity.x = patrol_direction * data.patrol_speed
+    # Разворот у краёв платформы
+    if not $RayCast2D.is_colliding() or is_on_wall():
+        patrol_direction *= -1
+    move_and_slide()
+
+func _chase(delta: float) -> void:
+    if not _player:
+        current_state = State.PATROL
+        return
+    if not is_on_floor():
+        velocity.y += _gravity * delta
+    var direction: float = signf(_player.global_position.x - global_position.x)
+    velocity.x = direction * data.chase_speed
+    # Атака, если достаточно близко
+    if global_position.distance_to(_player.global_position) <= data.attack_range:
+        current_state = State.ATTACK
+    move_and_slide()
+
+func _attack(_delta: float) -> void:
+    # Удар и возврат к преследованию
+    velocity.x = 0
+    hitbox.get_child(0).disabled = false
+    get_tree().create_timer(0.3).timeout.connect(func():
+        hitbox.get_child(0).disabled = true
+        current_state = State.CHASE
+    )
+
+func _hurt(delta: float) -> void:
+    velocity.x *= 0.9
+    if not is_on_floor():
+        velocity.y += _gravity * delta
+    move_and_slide()
+
+func _on_hurtbox_area_entered(area: Area2D) -> void:
+    if not area.is_in_group("hitbox"):
+        return
+    var damage: int = area.damage if "damage" in area else 1
+    take_damage(damage, area.global_position)
+
+func take_damage(amount: int, source_pos: Vector2) -> void:
+    health -= amount
+    var knockback_dir: Vector2 = (global_position - source_pos).normalized()
+    velocity = knockback_dir * data.knockback_force
+    if health <= 0:
+        current_state = State.DEAD
+        died.emit(enemy_id)
+        SaveManager.mark_enemy_killed(
+            get_parent().room_id, enemy_id)
+        queue_free()
+    else:
+        current_state = State.HURT
+        get_tree().create_timer(0.3).timeout.connect(
+            func(): current_state = State.CHASE)
+
+func _on_detection_body_entered(body: Node2D) -> void:
+    if body.is_in_group("player"):
+        _player = body
+        current_state = State.CHASE
+
+func _on_detection_body_exited(body: Node2D) -> void:
+    if body.is_in_group("player"):
+        _player = null
+        current_state = State.PATROL
+```
+
+## 6.10 Босс: Хранитель
+
+Хранитель — финальный босс, объединяющий все изученные механики. Он имеет 3 фазы, каждая из которых добавляет новые атаки и увеличивает скорость. Три фазы создают нарастающее напряжение: игрок должен адаптироваться к новым паттернам атак, используя все полученные способности.
+
+```gdscript
+# boss_guardian.gd — Хранитель (финальный босс)
+extends CharacterBody2D
+
+signal boss_defeated
+
+@export var data: EnemyData
+
+enum Phase { PHASE_1, PHASE_2, PHASE_3 }
+enum State { IDLE, CHARGE, SLAM, PROJECTILE, HURT, DEAD }
+
+var current_state: State = State.IDLE
+var current_phase: Phase = Phase.PHASE_1
+var health: int = 20
+var max_health_phases: Array[int] = [20, 15, 10]
+var phase_damage: Array[int] = [2, 3, 4]
+var phase_speed: Array[float] = [100.0, 150.0, 200.0]
+var attack_timer: float = 0.0
+var _player: Node2D
+var _gravity: float = 980.0
+
+@onready var hurtbox: Area2D = $Hurtbox
+@onready var hitbox: Area2D = $Hitbox
+@onready var sprite: AnimatedSprite2D = $Sprite2D
+@onready var projectile_scene: PackedScene = preload("res://scenes/common/boss_projectile.tscn")
+
+func _ready() -> void:
+    health = max_health_phases[0]
+    _player = GameManager.player
+    hurtbox.area_entered.connect(_on_hurtbox_area_entered)
+
+func _physics_process(delta: float) -> void:
+    match current_state:
+        State.IDLE:
+            _idle(delta)
+        State.CHARGE:
+            _charge(delta)
+        State.SLAM:
+            _slam(delta)
+        State.PROJECTILE:
+            _shoot(delta)
+        State.HURT:
+            _hurt(delta)
+        State.DEAD:
+            pass
+
+func _idle(delta: float) -> void:
+    attack_timer -= delta
+    if not is_on_floor():
+        velocity.y += _gravity * delta
+    velocity.x = 0
+    if attack_timer <= 0:
+        _choose_attack()
+    move_and_slide()
+
+func _choose_attack() -> void:
+    var attacks: Array[State] = [State.CHARGE]
+    if current_phase >= Phase.PHASE_2:
+        attacks.append(State.SLAM)
+    if current_phase >= Phase.PHASE_3:
+        attacks.append(State.PROJECTILE)
+    current_state = attacks.pick_random()
+
+func _charge(delta: float) -> void:
+    # Рывок в направлении игрока
+    var direction: float = signf(_player.global_position.x - global_position.x)
+    velocity.x = direction * phase_speed[current_phase]
+    if not is_on_floor():
+        velocity.y += _gravity * delta
+    # Рывок длится 1 секунду
+    attack_timer = 1.0
+    await get_tree().create_timer(1.0).timeout
+    current_state = State.IDLE
+    move_and_slide()
+
+func _slam(delta: float) -> void:
+    # Удар по земле — волна в обе стороны
+    velocity.x = 0
+    if not is_on_floor():
+        velocity.y += _gravity * delta
+    move_and_slide()
+    if is_on_floor():
+        # Создаём ударную волну
+        _spawn_shockwave()
+        attack_timer = 1.5
+        current_state = State.IDLE
+
+func _shoot(delta: float) -> void:
+    # Залп из 3 снарядов
+    velocity.x = 0
+    for i in range(3):
+        var bullet: Area2D = projectile_scene.instantiate()
+        bullet.global_position = global_position + Vector2(0, -20)
+        var angle: float = -0.3 + i * 0.3  # Веер: -0.3, 0, 0.3 радиан
+        bullet.direction = Vector2(signf(_player.global_position.x - global_position.x), 0).rotated(angle)
+        bullet.damage = phase_damage[current_phase]
+        get_parent().add_child(bullet)
+    attack_timer = 2.0
+    current_state = State.IDLE
+
+func _spawn_shockwave() -> void:
+    # Ударная волна в обе стороны (упрощённая реализация)
+    for dir in [-1, 1]:
+        var wave: Area2D = projectile_scene.instantiate()
+        wave.global_position = global_position + Vector2(dir * 30, -10)
+        wave.direction = Vector2(dir, 0)
+        wave.damage = phase_damage[current_phase]
+        get_parent().add_child(wave)
+
+func _hurt(delta: float) -> void:
+    velocity.x *= 0.9
+    if not is_on_floor():
+        velocity.y += _gravity * delta
+    move_and_slide()
+
+func _on_hurtbox_area_entered(area: Area2D) -> void:
+    if not area.is_in_group("hitbox"):
+        return
+    var damage: int = area.damage if "damage" in area else 1
+    take_damage(damage, area.global_position)
+
+func take_damage(amount: int, source_pos: Vector2) -> void:
+    health -= amount
+    var knockback_dir: Vector2 = (global_position - source_pos).normalized()
+    velocity = knockback_dir * 150.0
+    # Проверяем переход к следующей фазе
+    _check_phase()
+    if health <= 0:
+        current_state = State.DEAD
+        boss_defeated.emit()
+        queue_free()
+    else:
+        current_state = State.HURT
+        get_tree().create_timer(0.3).timeout.connect(
+            func(): current_state = State.IDLE)
+
+func _check_phase() -> void:
+    if health <= max_health_phases[2]:
+        current_phase = Phase.PHASE_3
+    elif health <= max_health_phases[1]:
+        current_phase = Phase.PHASE_2
+```
+
+<Callout type="info" title="Фазы босса и дизайн">
+Три фазы Хранителя построены по принципу нарастания сложности. Фаза 1 (100%–50% HP): только рывок — простая атака, которую легко уклонить рывком. Фаза 2 (50%–25% HP): добавляется удар по земле — уклоняйтесь прыжком. Фаза 3 (25%–0% HP): добавляется залп снарядов — уклоняйтесь рывком или за стеной. Каждая фаза требует использования разных способностей, что делает бой проверкой всего арсенала игрока.
+</Callout>
+
+<Challenge
+  title="Комбо-атаки"
+  difficulty="medium"
+  starterCode="# attack_state.gd — расширенное состояние атаки с комбо
+extends PlayerState
+
+# Задание: реализуйте 3-ударную комбо-цепочку
+# Удар 1: урон = 1, длительность = 0.3 сек
+# Удар 2: урон = 2, длительность = 0.25 сек
+# Удар 3: урон = 3, длительность = 0.4 сек (мощный завершающий удар)
+# Комбо окно: 0.5 сек после окончания удара
+# Если игрок нажимает attack в окне — следующий удар
+# Если нет — комбо сбрасывается
+
+var combo_count: int = 0
+var combo_window: float = 0.5
+var combo_damage: Array[int] = [1, 2, 3]
+var combo_durations: Array[float] = [0.3, 0.25, 0.4]
+var _attack_finished: bool = false
+var _in_combo_window: bool = false
+
+func enter() -> void:
+    pass  # TODO
+
+func exit() -> void:
+    pass  # TODO
+
+func physics_update(delta: float) -> void:
+    pass  # TODO"
+  solutionCode="# attack_state.gd — расширенное состояние атаки с комбо
+extends PlayerState
+
+var combo_count: int = 0
+var combo_window: float = 0.5
+var combo_damage: Array[int] = [1, 2, 3]
+var combo_durations: Array[float] = [0.3, 0.25, 0.4]
+var _attack_finished: bool = false
+var _in_combo_window: bool = false
+
+func enter() -> void:
+    _attack_finished = false
+    _in_combo_window = false
+    player.velocity.x = 0
+    # Устанавливаем урон текущего удара комбо
+    player.attack_damage = combo_damage[combo_count]
+    # Включаем hitbox
+    player.hitbox.get_child(0).disabled = false
+    player.attack_cooldown.start()
+    # Таймер окончания текущего удара
+    var duration: float = combo_durations[combo_count]
+    get_tree().create_timer(duration).timeout.connect(_on_attack_finished)
+
+func exit() -> void:
+    player.hitbox.get_child(0).disabled = true
+    player.attack_damage = 1  # Возвращаем базовый урон
+    combo_count = 0  # Сброс комбо при выходе
+    _attack_finished = false
+    _in_combo_window = false
+
+func physics_update(delta: float) -> void:
+    apply_gravity(delta)
+
+    if _in_combo_window:
+        # Проверяем нажатие attack для продолжения комбо
+        if Input.is_action_just_pressed('attack'):
+            combo_count += 1
+            if combo_count >= combo_damage.size():
+                combo_count = 0  # Комбо завершено, начинаем сначала
+            # Перезапускаем состояние с новым ударом
+            player.hitbox.get_child(0).disabled = true
+            enter()
+            return
+        # Комбо окно истекло
+        combo_window -= delta
+        if combo_window <= 0:
+            combo_count = 0
+            _transition_after_attack()
+            return
+
+    if _attack_finished and not _in_combo_window:
+        # Входим в комбо окно (если комбо не на максимальном ударе)
+        if combo_count < combo_damage.size() - 1:
+            _in_combo_window = true
+            combo_window = 0.5
+            player.hitbox.get_child(0).disabled = true
+        else:
+            # Третий удар — завершаем комбо
+            combo_count = 0
+            _transition_after_attack()
+
+    player.move_and_slide()
+
+func _transition_after_attack() -> void:
+    if not player.is_on_floor():
+        transition_requested.emit(&'Fall')
+    elif input_dir != 0:
+        transition_requested.emit(&'Run')
+    else:
+        transition_requested.emit(&'Idle')
+
+func _on_attack_finished() -> void:
+    _attack_finished = true"
+  testCases='[{"input":"Нажат attack один раз","expected":"Удар 1, урон = 1, переход в Idle после окна"},{"input":"Нажат attack 3 раза подряд","expected":"Удар 1 (урон 1) → Удар 2 (урон 2) → Удар 3 (урон 3) → переход"},{"input":"Нажат attack, пауза > 0.5 сек, нажат attack","expected":"Удар 1, комбо сброшено, Удар 1 (не Удар 2)"}]'
+  xp={15}
+>
+Расширьте состояние Attack до 3-ударной комбо-цепочки. Каждый следующий удар должен наносить больше урона (1 → 2 → 3) и следовать в течение 0.5 секунд после предыдущего. Комбо сбрасывается при промахе окна или при получении урона.
+</Challenge>
+
+---
+
+В следующей главе мы подведём итоги проекта: обзор всех реализованных систем, ключевые концепции, архитектурные паттерны и типичные ошибки.

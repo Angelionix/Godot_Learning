@@ -1,0 +1,1105 @@
+---
+title: "Глава 4: C++ ядро"
+project: "project-5-3d-adventure"
+chapter: "chapter-04-cpp-core"
+order: 4
+xp: 20
+estimatedTime: 60
+tags: []
+---
+
+## 4.1 Цели главы
+
+<GoalsList>
+1. **AdventureCharacter** — камера-относительное движение, переменный прыжок, slerp-поворот, система выносливости
+2. **CameraController** — 4 режима камеры (Follow, Cinematic, Fixed, Transition), SpringArm3D, орбита мышью
+3. **CombatController** — лёгкое комбо (3 удара), тяжёлая атака, уклонение с i-frames, блок
+4. **NPCController** — 6-состояний FSM (Idle, Patrol, Talk, Follow, Fight, Flee), NavigationAgent3D
+5. **Освоить ClassDB bindings** — экспорт свойств, сигналы, методы для инспектора Godot
+</GoalsList>
+
+## 4.2 AdventureCharacter — контроллер персонажа
+
+Контроллер персонажа — сердце 3D-приключения. Он обрабатывает движение относительно камеры, переменную высоту прыжка (короткий при тапе, высокий при удержании), плавный поворот через SLERP кватернионов и менеджмент выносливости.
+
+### adventure_character.h
+
+```cpp
+#pragma once
+
+#include <godot_cpp/classes/character_body3d.hpp>
+#include <godot_cpp/classes/input.hpp>
+#include <godot_cpp/classes/node3d.hpp>
+
+namespace adv {
+
+class AdventureCharacter : public CharacterBody3D {
+    GDCLASS(AdventureCharacter, CharacterBody3D)
+
+private:
+    // --- Параметры движения ---
+    double move_speed = 5.0;       // Скорость ходьбы (м/с)
+    double sprint_speed = 8.0;     // Скорость бега (м/с)
+    double jump_velocity = 4.5;    // Начальная скорость прыжка
+    double rotation_speed = 10.0;  // Скорость поворота персонажа
+    double jump_gravity = 9.8;     // Гравитация при подъёме (мягче)
+    double fall_gravity = 14.7;    // Гравитация при падении (резче)
+    double max_slope_angle = 45.0; // Максимальный угол подъёма
+
+    // --- Система выносливости ---
+    double max_stamina = 100.0;
+    double stamina = 100.0;
+    double stamina_regen = 25.0;          // Восстановление в бою (ед/сек)
+    double stamina_regen_idle = 40.0;     // Восстановление вне боя (ед/сек)
+    double sprint_stamina_cost = 15.0;    // Стоимость спринта (ед/сек)
+    bool in_combat = false;
+
+    // --- Внутренние переменные ---
+    Vector3 velocity;
+    Node3D *camera_pivot = nullptr;
+
+    Vector3 _get_camera_relative_input() const;
+    void _update_stamina(double delta, bool sprinting);
+
+protected:
+    static void _bind_methods();
+
+public:
+    void _ready() override;
+    void _physics_process(double delta) override;
+
+    // Экспорт свойств для инспектора
+    void set_move_speed(double p_speed);
+    double get_move_speed() const;
+    void set_sprint_speed(double p_speed);
+    double get_sprint_speed() const;
+    void set_jump_velocity(double p_vel);
+    double get_jump_velocity() const;
+    void set_jump_gravity(double p_grav);
+    double get_jump_gravity() const;
+    void set_fall_gravity(double p_grav);
+    double get_fall_gravity() const;
+    void set_rotation_speed(double p_speed);
+    double get_rotation_speed() const;
+    void set_max_slope_angle(double p_angle);
+    double get_max_slope_angle() const;
+    void set_max_stamina(double p_val);
+    double get_max_stamina() const;
+    void set_stamina_regen(double p_val);
+    double get_stamina_regen() const;
+    void set_stamina_regen_idle(double p_val);
+    double get_stamina_regen_idle() const;
+
+    // Публичный интерфейс
+    double get_stamina() const;
+    double get_stamina_ratio() const;
+    void consume_stamina(double amount);
+    void set_in_combat(bool p_combat);
+    bool get_in_combat() const;
+};
+
+} // namespace adv
+```
+
+### adventure_character.cpp
+
+```cpp
+#include "adventure_character.h"
+#include <godot_cpp/classes/input.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
+
+namespace adv {
+
+void AdventureCharacter::_bind_methods() {
+    // Движение
+    ClassDB::bind_method(D_METHOD("set_move_speed", "speed"), &AdventureCharacter::set_move_speed);
+    ClassDB::bind_method(D_METHOD("get_move_speed"), &AdventureCharacter::get_move_speed);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "move_speed", PROPERTY_HINT_RANGE, "1.0,20.0,0.1"),
+                 "set_move_speed", "get_move_speed");
+
+    ClassDB::bind_method(D_METHOD("set_sprint_speed", "speed"), &AdventureCharacter::set_sprint_speed);
+    ClassDB::bind_method(D_METHOD("get_sprint_speed"), &AdventureCharacter::get_sprint_speed);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sprint_speed", PROPERTY_HINT_RANGE, "3.0,20.0,0.1"),
+                 "set_sprint_speed", "get_sprint_speed");
+
+    // Прыжок
+    ClassDB::bind_method(D_METHOD("set_jump_velocity", "vel"), &AdventureCharacter::set_jump_velocity);
+    ClassDB::bind_method(D_METHOD("get_jump_velocity"), &AdventureCharacter::get_jump_velocity);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "jump_velocity", PROPERTY_HINT_RANGE, "1.0,15.0,0.1"),
+                 "set_jump_velocity", "get_jump_velocity");
+
+    // Гравитация
+    ClassDB::bind_method(D_METHOD("set_jump_gravity", "grav"), &AdventureCharacter::set_jump_gravity);
+    ClassDB::bind_method(D_METHOD("get_jump_gravity"), &AdventureCharacter::get_jump_gravity);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "jump_gravity", PROPERTY_HINT_RANGE, "5.0,30.0,0.1"),
+                 "set_jump_gravity", "get_jump_gravity");
+
+    ClassDB::bind_method(D_METHOD("set_fall_gravity", "grav"), &AdventureCharacter::set_fall_gravity);
+    ClassDB::bind_method(D_METHOD("get_fall_gravity"), &AdventureCharacter::get_fall_gravity);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fall_gravity", PROPERTY_HINT_RANGE, "5.0,40.0,0.1"),
+                 "set_fall_gravity", "get_fall_gravity");
+
+    // Выносливость
+    ClassDB::bind_method(D_METHOD("set_max_stamina", "val"), &AdventureCharacter::set_max_stamina);
+    ClassDB::bind_method(D_METHOD("get_max_stamina"), &AdventureCharacter::get_max_stamina);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_stamina", PROPERTY_HINT_RANGE, "50.0,300.0,5.0"),
+                 "set_max_stamina", "get_max_stamina");
+
+    ClassDB::bind_method(D_METHOD("set_stamina_regen", "val"), &AdventureCharacter::set_stamina_regen);
+    ClassDB::bind_method(D_METHOD("get_stamina_regen"), &AdventureCharacter::get_stamina_regen);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "stamina_regen", PROPERTY_HINT_RANGE, "5.0,60.0,1.0"),
+                 "set_stamina_regen", "get_stamina_regen");
+
+    ClassDB::bind_method(D_METHOD("set_stamina_regen_idle", "val"), &AdventureCharacter::set_stamina_regen_idle);
+    ClassDB::bind_method(D_METHOD("get_stamina_regen_idle"), &AdventureCharacter::get_stamina_regen_idle);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "stamina_regen_idle", PROPERTY_HINT_RANGE, "10.0,80.0,1.0"),
+                 "set_stamina_regen_idle", "get_stamina_regen_idle");
+
+    // Публичные методы
+    ClassDB::bind_method(D_METHOD("get_stamina"), &AdventureCharacter::get_stamina);
+    ClassDB::bind_method(D_METHOD("get_stamina_ratio"), &AdventureCharacter::get_stamina_ratio);
+    ClassDB::bind_method(D_METHOD("consume_stamina", "amount"), &AdventureCharacter::consume_stamina);
+    ClassDB::bind_method(D_METHOD("set_in_combat", "combat"), &AdventureCharacter::set_in_combat);
+    ClassDB::bind_method(D_METHOD("get_in_combat"), &AdventureCharacter::get_in_combat);
+
+    // Сигналы
+    ADD_SIGNAL(MethodInfo("stamina_depleted"));
+    ADD_SIGNAL(MethodInfo("stamina_changed", PropertyInfo(Variant::FLOAT, "ratio")));
+}
+
+void AdventureCharacter::_ready() {
+    camera_pivot = Object::cast_to<Node3D>(get_node_or_null("CameraPivot"));
+    stamina = max_stamina;
+}
+
+void AdventureCharacter::_physics_process(double delta) {
+    // --- Гравитация с переменной высотой прыжка ---
+    if (!is_on_floor()) {
+        // Падение быстрее подъёма — создаёт «тяжесть» приземления
+        double grav = velocity.y < 0.0 ? fall_gravity : jump_gravity;
+        velocity.y -= grav * delta;
+
+        // Укороченный прыжок при отпускании кнопки (variable jump)
+        if (velocity.y > 0.0 && !Input::get_singleton()->is_action_pressed("jump")) {
+            velocity.y *= 0.5;  // Обрезаем подъёмную силу
+        }
+    } else if (Input::get_singleton()->is_action_just_pressed("jump")) {
+        velocity.y = jump_velocity;
+    }
+
+    // --- Движение относительно камеры ---
+    Vector3 input_dir = _get_camera_relative_input();
+    bool sprinting = Input::get_singleton()->is_action_pressed("sprint")
+                     && stamina > 0.0 && input_dir.length_squared() > 0.01;
+    double current_speed = sprinting ? sprint_speed : move_speed;
+
+    velocity.x = input_dir.x * current_speed;
+    velocity.z = input_dir.z * current_speed;
+
+    // --- Выносливость ---
+    _update_stamina(delta, sprinting);
+
+    set_velocity(velocity);
+    move_and_slide();
+
+    // --- Поворот персонажа к направлению движения (SLERP) ---
+    if (input_dir.length_squared() > 0.01) {
+        Vector3 target_direction = -input_dir;
+        double target_yaw = Math::atan2(target_direction.x, target_direction.z);
+        Quaternion target_quat = Quaternion(Vector3(0, 1, 0), target_yaw);
+        Quaternion current_quat = get_global_transform().basis.get_rotation_quaternion();
+        Quaternion new_quat = current_quat.slerp(target_quat, rotation_speed * delta);
+        set_global_transform(Transform3D(Basis(new_quat), get_global_position()));
+    }
+}
+
+Vector3 AdventureCharacter::_get_camera_relative_input() const {
+    auto *input = Input::get_singleton();
+    Vector2 raw = input->get_vector("move_left", "move_right", "move_forward", "move_back");
+
+    if (!camera_pivot) {
+        // Резервный вариант: движение по мировым осям
+        return Vector3(raw.x, 0.0, raw.y).normalized();
+    }
+
+    // Проекция ввода на плоскость камеры
+    Vector3 cam_forward = -camera_pivot->get_global_basis().get_column(2);
+    Vector3 cam_right = camera_pivot->get_global_basis().get_column(0);
+
+    // Убираем вертикальную составляющую (движение только по XZ)
+    cam_forward.y = 0.0;
+    cam_forward.normalize();
+    cam_right.y = 0.0;
+    cam_right.normalize();
+
+    return (cam_forward * raw.y + cam_right * raw.x).normalized();
+}
+
+void AdventureCharacter::_update_stamina(double delta, bool sprinting) {
+    if (sprinting) {
+        stamina -= sprint_stamina_cost * delta;
+        if (stamina <= 0.0) {
+            stamina = 0.0;
+            emit_signal("stamina_depleted");
+        }
+    } else {
+        // Восстановление: быстрее вне боя
+        double regen_rate = in_combat ? stamina_regen : stamina_regen_idle;
+        stamina = Math::min(max_stamina, stamina + regen_rate * delta);
+    }
+    emit_signal("stamina_changed", stamina / max_stamina);
+}
+
+// --- Публичные методы выносливости ---
+double AdventureCharacter::get_stamina() const { return stamina; }
+double AdventureCharacter::get_stamina_ratio() const { return stamina / max_stamina; }
+
+void AdventureCharacter::consume_stamina(double amount) {
+    stamina = Math::max(0.0, stamina - amount);
+    if (stamina <= 0.0) emit_signal("stamina_depleted");
+    emit_signal("stamina_changed", stamina / max_stamina);
+}
+
+void AdventureCharacter::set_in_combat(bool p_combat) { in_combat = p_combat; }
+bool AdventureCharacter::get_in_combat() const { return in_combat; }
+
+// --- Геттеры и сеттеры ---
+void AdventureCharacter::set_move_speed(double p_speed) { move_speed = Math::max(0.1, p_speed); }
+double AdventureCharacter::get_move_speed() const { return move_speed; }
+void AdventureCharacter::set_sprint_speed(double p_speed) { sprint_speed = Math::max(0.1, p_speed); }
+double AdventureCharacter::get_sprint_speed() const { return sprint_speed; }
+void AdventureCharacter::set_jump_velocity(double p_vel) { jump_velocity = Math::max(0.1, p_vel); }
+double AdventureCharacter::get_jump_velocity() const { return jump_velocity; }
+void AdventureCharacter::set_jump_gravity(double p_grav) { jump_gravity = Math::max(1.0, p_grav); }
+double AdventureCharacter::get_jump_gravity() const { return jump_gravity; }
+void AdventureCharacter::set_fall_gravity(double p_grav) { fall_gravity = Math::max(1.0, p_grav); }
+double AdventureCharacter::get_fall_gravity() const { return fall_gravity; }
+void AdventureCharacter::set_rotation_speed(double p_speed) { rotation_speed = Math::max(0.1, p_speed); }
+double AdventureCharacter::get_rotation_speed() const { return rotation_speed; }
+void AdventureCharacter::set_max_slope_angle(double p_angle) { max_slope_angle = Math::clamp(p_angle, 0.0, 90.0); }
+double AdventureCharacter::get_max_slope_angle() const { return max_slope_angle; }
+void AdventureCharacter::set_max_stamina(double p_val) { max_stamina = Math::max(10.0, p_val); }
+double AdventureCharacter::get_max_stamina() const { return max_stamina; }
+void AdventureCharacter::set_stamina_regen(double p_val) { stamina_regen = Math::max(1.0, p_val); }
+double AdventureCharacter::get_stamina_regen() const { return stamina_regen; }
+void AdventureCharacter::set_stamina_regen_idle(double p_val) { stamina_regen_idle = Math::max(1.0, p_val); }
+double AdventureCharacter::get_stamina_regen_idle() const { return stamina_regen_idle; }
+
+} // namespace adv
+```
+
+<Callout type="warning" title="Кватернионный поворот vs углы Эйлера">
+Никогда не используйте Euler-углы для поворота персонажа в 3D! Углы Эйлера страдают от gimbal lock — ситуации, когда две оси совпадают и вращение теряет степень свободы. Кватернионы (`Quaternion`) и `slerp()` гарантируют плавный кратчайший путь вращения без артефактов. В Godot 4.x: `basis.get_rotation_quaternion()` возвращает кватернион, `slerp()` интерполирует его, `Basis(quaternion)` конвертирует обратно.
+</Callout>
+
+<Insight title="Камера-относительное движение в 3D-играх">
+В 3D-играх от третьего лица ввод игрока интерпретируется относительно камеры, а не мировых осей. Когда камера повёрнута направо, нажатие W двигает персонажа туда, куда смотрит камера, а не по мировой оси Z. Это достигается проецированием векторов вперёд/вправо камеры на горизонтальную плоскость (XZ), нормализацией и умножением на ввод. Без этого движение будет «ломанным» при вращении камеры.
+</Insight>
+
+## 4.3 CameraController — контроллер камеры
+
+Камера в 3D-приключении — не просто «привязка к персонажу». Она переключается между режимами: следует за игроком (Follow), показывает кат-сцену (Cinematic), фиксируется в точке (Fixed) и плавно переходит между ними (Transition).
+
+### camera_controller.h
+
+```cpp
+#pragma once
+
+#include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/classes/input.hpp>
+#include <godot_cpp/classes/spring_arm3d.hpp>
+
+namespace adv {
+
+// 4 режима работы камеры
+enum class CameraMode { FOLLOW, CINEMATIC, FIXED, TRANSITION };
+
+class CameraController : public Node3D {
+    GDCLASS(CameraController, Node3D)
+
+private:
+    // --- Параметры Follow-режима ---
+    double yaw = 0.0;              // Горизонтальный поворот (градусы)
+    double pitch = 0.0;            // Вертикальный наклон (градусы)
+    double rotation_speed = 2.0;   // Скорость вращения мышью/стиком
+    double smooth_speed = 8.0;     // Скорость следования за целью
+    double min_pitch = -60.0;      // Максимальный наклон вниз
+    double max_pitch = 30.0;       // Максимальный наклон вверх
+
+    // --- Состояния ---
+    CameraMode current_mode = CameraMode::FOLLOW;
+    Node3D *follow_target = nullptr;
+    Node3D *cinematic_target = nullptr;
+
+    // --- Transition ---
+    double transition_progress = 0.0;
+    double transition_duration = 1.0;
+    Transform3D transition_from;
+    Transform3D transition_to;
+
+    // --- SpringArm3D ---
+    double spring_arm_length = 5.0;
+    double spring_arm_margin = 0.5;
+
+    void _update_follow(double delta);
+    void _update_cinematic(double delta);
+    void _update_transition(double delta);
+
+protected:
+    static void _bind_methods();
+
+public:
+    void _ready() override;
+    void _process(double delta) override;
+
+    void set_mode(CameraMode mode);
+    CameraMode get_mode() const;
+    void transition_to(const Transform3D &target, double duration = 1.0);
+    void set_follow_target(Node3D *target);
+    Node3D *get_follow_target() const;
+
+    // Экспорт
+    void set_rotation_speed(double p_speed);
+    double get_rotation_speed() const;
+    void set_smooth_speed(double p_speed);
+    double get_smooth_speed() const;
+    void set_min_pitch(double p_val);
+    double get_min_pitch() const;
+    void set_max_pitch(double p_val);
+    double get_max_pitch() const;
+};
+
+} // namespace adv
+```
+
+### camera_controller.cpp
+
+```cpp
+#include "camera_controller.h"
+#include <godot_cpp/classes/input.hpp>
+#include <godot_cpp/variant/math.hpp>
+
+namespace adv {
+
+void CameraController::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_rotation_speed", "speed"), &CameraController::set_rotation_speed);
+    ClassDB::bind_method(D_METHOD("get_rotation_speed"), &CameraController::get_rotation_speed);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "rotation_speed", PROPERTY_HINT_RANGE, "0.5,5.0,0.1"),
+                 "set_rotation_speed", "get_rotation_speed");
+
+    ClassDB::bind_method(D_METHOD("set_smooth_speed", "speed"), &CameraController::set_smooth_speed);
+    ClassDB::bind_method(D_METHOD("get_smooth_speed"), &CameraController::get_smooth_speed);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "smooth_speed", PROPERTY_HINT_RANGE, "1.0,20.0,0.5"),
+                 "set_smooth_speed", "get_smooth_speed");
+
+    ClassDB::bind_method(D_METHOD("set_min_pitch", "val"), &CameraController::set_min_pitch);
+    ClassDB::bind_method(D_METHOD("get_min_pitch"), &CameraController::get_min_pitch);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "min_pitch", PROPERTY_HINT_RANGE, "-89.0,0.0,1.0"),
+                 "set_min_pitch", "get_min_pitch");
+
+    ClassDB::bind_method(D_METHOD("set_max_pitch", "val"), &CameraController::set_max_pitch);
+    ClassDB::bind_method(D_METHOD("get_max_pitch"), &CameraController::get_max_pitch);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_pitch", PROPERTY_HINT_RANGE, "0.0,89.0,1.0"),
+                 "set_max_pitch", "get_max_pitch");
+
+    ClassDB::bind_method(D_METHOD("set_mode", "mode"), &CameraController::set_mode);
+    ClassDB::bind_method(D_METHOD("get_mode"), &CameraController::get_mode);
+    ClassDB::bind_method(D_METHOD("transition_to", "target", "duration"), &CameraController::transition_to, DEFVAL(1.0));
+    ClassDB::bind_method(D_METHOD("set_follow_target", "target"), &CameraController::set_follow_target);
+    ClassDB::bind_method(D_METHOD("get_follow_target"), &CameraController::get_follow_target);
+
+    ADD_SIGNAL(MethodInfo("mode_changed", PropertyInfo(Variant::INT, "mode")));
+    ADD_SIGNAL(MethodInfo("transition_complete"));
+}
+
+void CameraController::_ready() {
+    // Настраиваем SpringArm3D (дочерний узел в сцене)
+    SpringArm3D *spring = Object::cast_to<SpringArm3D>(get_node_or_null("SpringArm3D"));
+    if (spring) {
+        spring->set_spring_length(spring_arm_length);
+        spring->set_margin(spring_arm_margin);
+        spring->set_collision_mask(2); // Проверяем только terrain
+    }
+}
+
+void CameraController::_process(double delta) {
+    switch (current_mode) {
+        case CameraMode::FOLLOW:     _update_follow(delta); break;
+        case CameraMode::CINEMATIC:  _update_cinematic(delta); break;
+        case CameraMode::FIXED:      break; // Статичная камера — ничего не делаем
+        case CameraMode::TRANSITION: _update_transition(delta); break;
+    }
+}
+
+void CameraController::_update_follow(double delta) {
+    auto *input = Input::get_singleton();
+
+    // Вращение камеры мышью / правым стиком
+    Vector2 cam_input = input->get_vector("look_left", "look_right", "look_up", "look_down");
+    yaw += cam_input.x * rotation_speed * delta;
+    pitch = Math::clamp(pitch + cam_input.y * rotation_speed * delta, min_pitch, max_pitch);
+
+    // Применяем вращение к pivot (SpringArm3D — дочерний узел)
+    set_rotation(Vector3(Math::deg_to_rad(pitch), Math::deg_to_rad(yaw), 0.0));
+
+    // Плавное следование за персонажем (экспоненциальная интерполяция)
+    if (follow_target) {
+        Vector3 target = follow_target->get_global_position();
+        Vector3 current = get_global_position();
+        // factor обеспечивает frame-rate independent lerp
+        double factor = 1.0 - Math::exp(-smooth_speed * delta);
+        set_global_position(current.lerp(target, factor));
+    }
+}
+
+void CameraController::_update_cinematic(double delta) {
+    if (!cinematic_target) {
+        set_mode(CameraMode::FOLLOW);
+        return;
+    }
+    // Камера следует за cinematic_target с задержкой
+    Vector3 target = cinematic_target->get_global_position();
+    Vector3 current = get_global_position();
+    double factor = 1.0 - Math::exp(-smooth_speed * 0.3 * delta);
+    set_global_position(current.lerp(target, factor));
+}
+
+void CameraController::_update_transition(double delta) {
+    transition_progress += delta / transition_duration;
+    if (transition_progress >= 1.0) {
+        transition_progress = 1.0;
+        set_global_transform(transition_to);
+        current_mode = CameraMode::CINEMATIC;
+        emit_signal("transition_complete");
+        return;
+    }
+    // Smoothstep интерполяция: плавное ускорение и замедление
+    double t = transition_progress * transition_progress * (3.0 - 2.0 * transition_progress);
+    Vector3 pos = transition_from.origin.lerp(transition_to.origin, t);
+    Quaternion rot = transition_from.basis.get_rotation_quaternion().slerp(
+        transition_to.basis.get_rotation_quaternion(), t);
+    set_global_transform(Transform3D(Basis(rot), pos));
+}
+
+void CameraController::set_mode(CameraMode mode) {
+    if (current_mode == mode) return;
+    current_mode = mode;
+    emit_signal("mode_changed", static_cast<int>(mode));
+}
+
+void CameraController::transition_to(const Transform3D &target, double duration) {
+    transition_from = get_global_transform();
+    transition_to = target;
+    transition_progress = 0.0;
+    transition_duration = Math::max(0.1, duration);
+    current_mode = CameraMode::TRANSITION;
+}
+
+void CameraController::set_follow_target(Node3D *target) { follow_target = target; }
+Node3D *CameraController::get_follow_target() const { return follow_target; }
+
+// --- Геттеры/сеттеры ---
+void CameraController::set_rotation_speed(double p_speed) { rotation_speed = Math::max(0.1, p_speed); }
+double CameraController::get_rotation_speed() const { return rotation_speed; }
+void CameraController::set_smooth_speed(double p_speed) { smooth_speed = Math::max(0.5, p_speed); }
+double CameraController::get_smooth_speed() const { return smooth_speed; }
+void CameraController::set_min_pitch(double p_val) { min_pitch = Math::clamp(p_val, -89.0, 0.0); }
+double CameraController::get_min_pitch() const { return min_pitch; }
+void CameraController::set_max_pitch(double p_val) { max_pitch = Math::clamp(p_val, 0.0, 89.0); }
+double CameraController::get_max_pitch() const { return max_pitch; }
+
+} // namespace adv
+```
+
+### Дерево сцены камеры
+
+```
+CameraPivot (CameraController — Node3D)
+└── SpringArm3D                # Автоматически отодвигает камеру от стен
+    └── Camera3D               # Фактическая камера
+        └── Position: (0, 0, 0) # На конце SpringArm
+```
+
+SpringArm3D — встроенный узел Godot, который автоматически отодвигает камеру при столкновении с геометрией, предотвращая «проваливание» камеры в стены.
+
+## 4.4 CombatController — боевая система
+
+Боевая система построена на выносливости: каждое действие стоит стамину, заставляя игрока выбирать между атакой, уклонением и блоком. CombatController управляет лёгким комбо (3 удара с нарастающим уроном), тяжёлой атакой, уклонением с кадрами неуязвимости и блоком.
+
+### combat_controller.h
+
+```cpp
+#pragma once
+
+#include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/classes/character_body3d.hpp>
+
+namespace adv {
+
+// Состояния боевой системы
+enum class CombatState { IDLE, LIGHT_ATTACK, HEAVY_ATTACK, DODGING, BLOCKING, STAGGERED };
+
+class CombatController : public Node {
+    GDCLASS(CombatController, Node)
+
+private:
+    // --- Лёгкое комбо ---
+    int combo_step = 0;                 // Текущий удар (0, 1, 2)
+    double combo_window = 0.6;          // Окно для следующего удара (сек)
+    double combo_timer = 0.0;           // Таймер окна комбо
+    double light_attack_base_damage = 10.0;
+    double combo_multiplier_1 = 1.0;    // Множитель 1-го удара
+    double combo_multiplier_2 = 1.2;    // Множитель 2-го удара
+    double combo_multiplier_3 = 1.5;    // Множитель 3-го удара
+
+    // --- Тяжёлая атака ---
+    double heavy_attack_damage = 25.0;
+    double heavy_attack_cost = 15.0;    // Выносливость
+    double heavy_attack_cooldown = 0.8; // Кулдаун (сек)
+    double heavy_attack_timer = 0.0;
+
+    // --- Уклонение ---
+    double dodge_speed = 10.0;
+    double dodge_duration = 0.3;        // Длительность уклонения (сек)
+    double dodge_iframe_duration = 0.2; // Кадры неуязвимости (сек)
+    double dodge_cost = 20.0;           // Выносливость
+    double dodge_cooldown = 0.5;        // Кулдаун (сек)
+    double dodge_timer = 0.0;
+    double dodge_elapsed = 0.0;
+    bool is_iframe_active = false;
+
+    // --- Блок ---
+    double block_reduction = 0.6;       // 60% снижения урона
+    double block_cost_per_hit = 10.0;   // Выносливость за заблокированный удар
+
+    // --- Общее ---
+    CombatState current_state = CombatState::IDLE;
+    CharacterBody3D *owner_character = nullptr;
+
+    double _get_combo_multiplier() const;
+
+protected:
+    static void _bind_methods();
+
+public:
+    void _ready() override;
+    void _process(double delta) override;
+
+    void on_attack_input();     // Лёгкая атака (ЛКМ / X)
+    void on_heavy_input();      // Тяжёлая атака (hold ЛКМ / Y)
+    void on_dodge_input();      // Уклонение (Shift / B)
+    void on_block_start();      // Начало блока (Q / LB)
+    void on_block_end();        // Конец блока
+
+    // Получение урона с учётом блока
+    int apply_damage(int base_damage, const Vector3 &source_position);
+
+    // Для Hitbox3D — получить текущий урон
+    double get_current_attack_damage() const;
+
+    CombatState get_state() const;
+    bool is_iframe() const;
+};
+
+} // namespace adv
+```
+
+### combat_controller.cpp
+
+```cpp
+#include "combat_controller.h"
+#include <godot_cpp/variant/utility_functions.hpp>
+
+namespace adv {
+
+void CombatController::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("on_attack_input"), &CombatController::on_attack_input);
+    ClassDB::bind_method(D_METHOD("on_heavy_input"), &CombatController::on_heavy_input);
+    ClassDB::bind_method(D_METHOD("on_dodge_input"), &CombatController::on_dodge_input);
+    ClassDB::bind_method(D_METHOD("on_block_start"), &CombatController::on_block_start);
+    ClassDB::bind_method(D_METHOD("on_block_end"), &CombatController::on_block_end);
+    ClassDB::bind_method(D_METHOD("apply_damage", "base_damage", "source_position"), &CombatController::apply_damage);
+    ClassDB::bind_method(D_METHOD("get_current_attack_damage"), &CombatController::get_current_attack_damage);
+    ClassDB::bind_method(D_METHOD("get_state"), &CombatController::get_state);
+    ClassDB::bind_method(D_METHOD("is_iframe"), &CombatController::is_iframe);
+
+    ADD_SIGNAL(MethodInfo("attack_started", PropertyInfo(Variant::INT, "combo_step")));
+    ADD_SIGNAL(MethodInfo("attack_hit", PropertyInfo(Variant::FLOAT, "damage")));
+    ADD_SIGNAL(MethodInfo("dodge_started"));
+    ADD_SIGNAL(MethodInfo("iframe_started"));
+    ADD_SIGNAL(MethodInfo("iframe_ended"));
+    ADD_SIGNAL(MethodInfo("block_started"));
+    ADD_SIGNAL(MethodInfo("block_hit", PropertyInfo(Variant::INT, "reduced_damage")));
+    ADD_SIGNAL(MethodInfo("staggered"));
+}
+
+void CombatController::_ready() {
+    owner_character = Object::cast_to<CharacterBody3D>(get_parent());
+}
+
+void CombatController::_process(double delta) {
+    // Обновляем таймеры
+    if (current_state == CombatState::LIGHT_ATTACK) {
+        combo_timer += delta;
+        if (combo_timer >= combo_window) {
+            combo_step = 0;
+            current_state = CombatState::IDLE;
+        }
+    }
+
+    if (current_state == CombatState::DODGING) {
+        dodge_elapsed += delta;
+
+        // Проверяем i-frames
+        if (dodge_elapsed <= dodge_iframe_duration && !is_iframe_active) {
+            is_iframe_active = true;
+            emit_signal("iframe_started");
+        }
+        if (dodge_elapsed > dodge_iframe_duration && is_iframe_active) {
+            is_iframe_active = false;
+            emit_signal("iframe_ended");
+        }
+
+        // Конец уклонения
+        if (dodge_elapsed >= dodge_duration) {
+            current_state = CombatState::IDLE;
+            is_iframe_active = false;
+            emit_signal("iframe_ended");
+        }
+    }
+
+    // Кулдауны
+    if (heavy_attack_timer > 0.0) heavy_attack_timer -= delta;
+    if (dodge_timer > 0.0) dodge_timer -= delta;
+}
+
+void CombatController::on_attack_input() {
+    if (current_state == CombatState::BLOCKING) return;
+    if (current_state == CombatState::STAGGERED) return;
+
+    // Проверяем выносливость (лёгкая атака бесплатная, но комбо — нет)
+    auto *character = Object::cast_to<AdventureCharacter>(owner_character);
+
+    if (current_state == CombatState::LIGHT_ATTACK && combo_step < 2) {
+        // Продолжение комбо
+        combo_step++;
+        combo_timer = 0.0;
+    } else if (current_state == CombatState::IDLE) {
+        // Начало комбо
+        combo_step = 0;
+        combo_timer = 0.0;
+    } else {
+        return; // Нельзя атаковать во время уклонения/тяжёлой атаки
+    }
+
+    current_state = CombatState::LIGHT_ATTACK;
+    double damage = light_attack_base_damage * _get_combo_multiplier();
+    emit_signal("attack_started", combo_step);
+    emit_signal("attack_hit", damage);
+}
+
+void CombatController::on_heavy_input() {
+    if (current_state != CombatState::IDLE) return;
+    if (heavy_attack_timer > 0.0) return;
+
+    auto *character = Object::cast_to<AdventureCharacter>(owner_character);
+    if (!character || character->get_stamina() < heavy_attack_cost) return;
+
+    character->consume_stamina(heavy_attack_cost);
+    current_state = CombatState::HEAVY_ATTACK;
+    heavy_attack_timer = heavy_attack_cooldown;
+    emit_signal("attack_started", -1); // -1 = тяжёлая атака
+    emit_signal("attack_hit", heavy_attack_damage);
+
+    // Тяжёлая атака завершается по AnimationPlayer
+    // Упрощение: возвращаем в IDLE после кулдауна
+}
+
+void CombatController::on_dodge_input() {
+    if (current_state != CombatState::IDLE) return;
+    if (dodge_timer > 0.0) return;
+
+    auto *character = Object::cast_to<AdventureCharacter>(owner_character);
+    if (!character || character->get_stamina() < dodge_cost) return;
+
+    character->consume_stamina(dodge_cost);
+    current_state = CombatState::DODGING;
+    dodge_elapsed = 0.0;
+    dodge_timer = dodge_cooldown;
+    emit_signal("dodge_started");
+}
+
+void CombatController::on_block_start() {
+    if (current_state != CombatState::IDLE) return;
+    current_state = CombatState::BLOCKING;
+    emit_signal("block_started");
+}
+
+void CombatController::on_block_end() {
+    if (current_state == CombatState::BLOCKING) {
+        current_state = CombatState::IDLE;
+    }
+}
+
+int CombatController::apply_damage(int base_damage, const Vector3 &source_position) {
+    if (is_iframe_active) return 0; // Кадры неуязвимости
+
+    if (current_state == CombatState::BLOCKING) {
+        // Проверяем, что источник спереди (угол < 90°)
+        Vector3 to_source = (source_position - owner_character->get_global_position()).normalized();
+        Vector3 facing = -owner_character->get_global_basis().get_column(2);
+        double dot = facing.dot(to_source);
+
+        if (dot > 0.0) { // Источник спереди — блокируем
+            auto *character = Object::cast_to<AdventureCharacter>(owner_character);
+            if (character && character->get_stamina() >= block_cost_per_hit) {
+                character->consume_stamina(block_cost_per_hit);
+                int reduced = Math::round(base_damage * (1.0 - block_reduction));
+                emit_signal("block_hit", reduced);
+                return reduced;
+            }
+            // Выносливость кончилась — блок пробит
+            current_state = CombatState::STAGGERED;
+            emit_signal("staggered");
+        }
+    }
+
+    return base_damage; // Полный урон
+}
+
+double CombatController::_get_combo_multiplier() const {
+    switch (combo_step) {
+        case 0: return combo_multiplier_1;
+        case 1: return combo_multiplier_2;
+        case 2: return combo_multiplier_3;
+        default: return 1.0;
+    }
+}
+
+double CombatController::get_current_attack_damage() const {
+    if (current_state == CombatState::LIGHT_ATTACK) {
+        return light_attack_base_damage * _get_combo_multiplier();
+    }
+    if (current_state == CombatState::HEAVY_ATTACK) {
+        return heavy_attack_damage;
+    }
+    return 0.0;
+}
+
+CombatState CombatController::get_state() const { return current_state; }
+bool CombatController::is_iframe() const { return is_iframe_active; }
+
+} // namespace adv
+```
+
+## 4.5 NPCController — FSM для NPC
+
+NPC используют конечный автомат (FSM) с 6 состояниями: Idle (ожидание), Patrol (патруль по точкам), Talk (диалог с игроком), Follow (следование за игроком), Fight (атака), Flee (бегство при низком здоровье). Переходы между состояниями управляются дистанцией до игрока, здоровьем и внешними событиями.
+
+### npc_controller.h
+
+```cpp
+#pragma once
+
+#include <godot_cpp/classes/character_body3d.hpp>
+#include <godot_cpp/classes/navigation_agent3d.hpp>
+
+namespace adv {
+
+// 6 состояний NPC (добавлено TALK для мирных NPC)
+enum class NPCState { IDLE, PATROL, TALK, FOLLOW, FIGHT, FLEE };
+
+class NPCController : public CharacterBody3D {
+    GDCLASS(NPCController, CharacterBody3D)
+
+private:
+    NPCState current_state = NPCState::IDLE;
+
+    // --- Обнаружение ---
+    double detect_range = 8.0;    // Дальность обнаружения игрока
+    double talk_range = 2.5;      // Дальность начала диалога
+    double attack_range = 1.5;    // Дальность атаки
+    double flee_health_threshold = 0.2; // Бегство при 20% HP
+
+    // --- Таймеры ---
+    double idle_wait_time = 2.0;
+    double idle_timer = 0.0;
+    double stunned_duration = 2.0;
+    double stunned_timer = 0.0;
+    double attack_cooldown = 1.5;
+    double attack_timer = 0.0;
+
+    // --- Патруль ---
+    PackedVector3Array patrol_points;
+    int current_patrol_index = 0;
+
+    // --- Ссылки ---
+    NavigationAgent3D *nav_agent = nullptr;
+    CharacterBody3D *player_ref = nullptr;
+    double move_speed = 3.0;
+
+    void _transition_to(NPCState new_state);
+
+protected:
+    static void _bind_methods();
+
+public:
+    void _ready() override;
+    void _physics_process(double delta) override;
+
+    // Обновление состояний
+    void _update_idle(double delta);
+    void _update_patrol(double delta);
+    void _update_talk(double delta);
+    void _update_follow(double delta);
+    void _update_fight(double delta);
+    void _update_flee(double delta);
+
+    // Публичные методы
+    void set_patrol_points(const PackedVector3Array &points);
+    PackedVector3Array get_patrol_points() const;
+    void start_dialogue();
+    void end_dialogue();
+    void stun(double duration);
+    NPCState get_state() const;
+};
+
+} // namespace adv
+```
+
+### npc_controller.cpp
+
+```cpp
+#include "npc_controller.h"
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
+
+namespace adv {
+
+void NPCController::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_patrol_points", "points"), &NPCController::set_patrol_points);
+    ClassDB::bind_method(D_METHOD("get_patrol_points"), &NPCController::get_patrol_points);
+    ClassDB::bind_method(D_METHOD("start_dialogue"), &NPCController::start_dialogue);
+    ClassDB::bind_method(D_METHOD("end_dialogue"), &NPCController::end_dialogue);
+    ClassDB::bind_method(D_METHOD("stun", "duration"), &NPCController::stun);
+    ClassDB::bind_method(D_METHOD("get_state"), &NPCController::get_state);
+
+    ADD_SIGNAL(MethodInfo("state_changed", PropertyInfo(Variant::INT, "new_state")));
+    ADD_SIGNAL(MethodInfo("dialogue_requested"));
+    ADD_SIGNAL(MethodInfo("attack_hit", PropertyInfo(Variant::INT, "damage")));
+}
+
+void NPCController::_ready() {
+    nav_agent = Object::cast_to<NavigationAgent3D>(get_node_or_null("NavigationAgent3D"));
+
+    // Получаем ссылку на игрока через группу
+    TypedArray<Node> players = get_tree()->get_nodes_in_group("player");
+    if (players.size() > 0) {
+        player_ref = Object::cast_to<CharacterBody3D>(players[0]);
+    }
+}
+
+void NPCController::_physics_process(double delta) {
+    if (!nav_agent) return;
+
+    switch (current_state) {
+        case NPCState::IDLE:   _update_idle(delta); break;
+        case NPCState::PATROL: _update_patrol(delta); break;
+        case NPCState::TALK:   _update_talk(delta); break;
+        case NPCState::FOLLOW: _update_follow(delta); break;
+        case NPCState::FIGHT:  _update_fight(delta); break;
+        case NPCState::FLEE:   _update_flee(delta); break;
+    }
+
+    // Навигация (кроме IDLE и TALK)
+    if (current_state != NPCState::IDLE && current_state != NPCState::TALK) {
+        Vector3 next_pos = nav_agent->get_next_path_position();
+        Vector3 direction = (next_pos - get_global_position()).normalized();
+        Vector3 vel = direction * move_speed;
+        vel.y = get_velocity().y;
+
+        set_velocity(vel);
+        move_and_slide();
+
+        // Поворот NPC к направлению движения
+        if (direction.length_squared() > 0.01) {
+            double target_yaw = Math::atan2(direction.x, direction.z);
+            Quaternion target_quat(Vector3(0, 1, 0), target_yaw);
+            Quaternion current_quat = get_global_transform().basis.get_rotation_quaternion();
+            Quaternion new_quat = current_quat.slerp(target_quat, 8.0 * delta);
+            set_global_transform(Transform3D(Basis(new_quat), get_global_position()));
+        }
+    }
+}
+
+void NPCController::_update_idle(double delta) {
+    idle_timer += delta;
+    if (idle_timer >= idle_wait_time && patrol_points.size() > 0) {
+        idle_timer = 0.0;
+        _transition_to(NPCState::PATROL);
+    }
+
+    // Обнаружение игрока
+    if (player_ref) {
+        double dist = get_global_position().distance_to(player_ref->get_global_position());
+        if (dist <= detect_range) {
+            _transition_to(NPCState::FOLLOW);
+        }
+    }
+}
+
+void NPCController::_update_patrol(double delta) {
+    if (patrol_points.is_empty()) {
+        _transition_to(NPCState::IDLE);
+        return;
+    }
+
+    Vector3 target = patrol_points[current_patrol_index];
+    nav_agent->set_target_position(target);
+
+    if (get_global_position().distance_to(target) < 1.0) {
+        current_patrol_index = (current_patrol_index + 1) % patrol_points.size();
+        idle_timer = 0.0;
+        _transition_to(NPCState::IDLE);
+    }
+
+    // Обнаружение игрока при патруле
+    if (player_ref) {
+        double dist = get_global_position().distance_to(player_ref->get_global_position());
+        if (dist <= detect_range) {
+            _transition_to(NPCState::FOLLOW);
+        }
+    }
+}
+
+void NPCController::_update_talk(double delta) {
+    // NPC стоит лицом к игроку во время диалога
+    if (player_ref) {
+        Vector3 to_player = player_ref->get_global_position() - get_global_position();
+        to_player.y = 0.0;
+        if (to_player.length_squared() > 0.01) {
+            double target_yaw = Math::atan2(to_player.x, to_player.z);
+            Quaternion target_quat(Vector3(0, 1, 0), target_yaw);
+            Quaternion current_quat = get_global_transform().basis.get_rotation_quaternion();
+            Quaternion new_quat = current_quat.slerp(target_quat, 10.0 * delta);
+            set_global_transform(Transform3D(Basis(new_quat), get_global_position()));
+        }
+    }
+}
+
+void NPCController::_update_follow(double delta) {
+    if (!player_ref) {
+        _transition_to(NPCState::IDLE);
+        return;
+    }
+
+    nav_agent->set_target_position(player_ref->get_global_position());
+    double dist = get_global_position().distance_to(player_ref->get_global_position());
+
+    if (dist <= talk_range) {
+        // Мирный NPC → диалог, враждебный → атака
+        _transition_to(NPCState::FIGHT);
+    } else if (dist > detect_range * 1.5) {
+        _transition_to(NPCState::IDLE);
+    }
+}
+
+void NPCController::_update_fight(double delta) {
+    if (!player_ref) {
+        _transition_to(NPCState::IDLE);
+        return;
+    }
+
+    double dist = get_global_position().distance_to(player_ref->get_global_position());
+
+    // Атака
+    attack_timer += delta;
+    if (dist <= attack_range && attack_timer >= attack_cooldown) {
+        attack_timer = 0.0;
+        emit_signal("attack_hit", 5); // Базовый урон NPC
+    }
+
+    // Поддержание дистанции
+    if (dist > attack_range) {
+        nav_agent->set_target_position(player_ref->get_global_position());
+    }
+
+    // Бегство при низком здоровье
+    // (проверка через HealthComponent, опущено для краткости)
+
+    // Потеря игрока
+    if (dist > detect_range * 2.0) {
+        _transition_to(NPCState::IDLE);
+    }
+}
+
+void NPCController::_update_flee(double delta) {
+    if (!player_ref) {
+        _transition_to(NPCState::IDLE);
+        return;
+    }
+
+    // Бежим от игрока
+    Vector3 away = (get_global_position() - player_ref->get_global_position()).normalized();
+    Vector3 flee_target = get_global_position() + away * 10.0;
+    nav_agent->set_target_position(flee_target);
+
+    // Возвращаемся к патрулю, когда далеко
+    double dist = get_global_position().distance_to(player_ref->get_global_position());
+    if (dist > detect_range * 2.0) {
+        _transition_to(NPCState::IDLE);
+    }
+}
+
+void NPCController::start_dialogue() {
+    _transition_to(NPCState::TALK);
+    emit_signal("dialogue_requested");
+}
+
+void NPCController::end_dialogue() {
+    _transition_to(NPCState::IDLE);
+}
+
+void NPCController::stun(double duration) {
+    stunned_duration = duration;
+    stunned_timer = 0.0;
+    // STUNNED — дополнительное состояние для микровызова «Парирование»
+    // Реализуйте как под-состояние IDLE или расширите enum
+    _transition_to(NPCState::IDLE);
+}
+
+void NPCController::_transition_to(NPCState new_state) {
+    if (current_state == new_state) return;
+    current_state = new_state;
+    emit_signal("state_changed", static_cast<int>(new_state));
+}
+
+void NPCController::set_patrol_points(const PackedVector3Array &points) {
+    patrol_points = points;
+}
+
+PackedVector3Array NPCController::get_patrol_points() const {
+    return patrol_points;
+}
+
+NPCState NPCController::get_state() const { return current_state; }
+
+} // namespace adv
+```
+
+<Callout type="tip" title="FSM NPC: почему не Behaviour Tree">
+Для 6 состояний NPC конечный автомат (FSM) — оптимальный выбор. Behaviour Tree оправдан при 15+ состояниях и сложных условиях. FSM проще отлаживать (switch + enum), проще визуализировать и достаточно для NPC с патрулём, преследованием, атакой и бегством. Добавляйте Behaviour Tree, когда NPC начнут нуждаться в последовательностях действий («подойти → достать оружие → атаковать → отступить → вылечиться»).
+</Callout>
+
+## 4.6 Итоги
+
+В этой главе мы создали четыре C++ контроллера, формирующих ядро 3D-приключения:
+
+| Контроллер | Ответственность | Ключевая техника |
+|---|---|---|
+| AdventureCharacter | Движение, прыжок, выносливость | Camera-relative input, variable jump, SLERP rotation |
+| CameraController | 4 режима камеры | Follow/Cinematic/Fixed/Transition, SpringArm3D |
+| CombatController | Боевая система | Комбо-цепочка, i-frames, блок, стамина-менеджмент |
+| NPCController | AI противников и мирных NPC | 6-state FSM, NavigationAgent3D |
+
+Каждый класс экспортирует свойства через `ClassDB::_bind_methods()` с `ADD_PROPERTY`, что позволяет настраивать параметры в инспекторе Godot без перекомпиляции. Сигналы (`ADD_SIGNAL`) связывают C++ логику с GDScript-интерфейсом.

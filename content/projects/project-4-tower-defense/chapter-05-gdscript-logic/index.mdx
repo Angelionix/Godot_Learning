@@ -1,0 +1,559 @@
+---
+title: "Глава 5: Менеджеры и данные"
+project: "project-4-tower-defense"
+chapter: "chapter-05-gdscript-logic"
+order: 5
+xp: 15
+estimatedTime: 50
+tags: ["GDScript", "менеджеры", "ресурсы", "FSM", "фабрика"]
+---
+
+
+## 5.1 Цели главы
+
+<GoalsList>
+1. **Реализовать Data Layer** — TowerData, EnemyData, WaveData, SpawnGroup с вычислимыми свойствами
+2. **Реализовать Logic Layer** — 6 Autoload-менеджеров с полной бизнес-логикой
+3. **Освоить FSM** — конечный автомат для управления волнами
+4. **Применить Factory** — TowerRegistry для создания башен по типу
+5. **Понять data-driven подход** — почему данные в Resource лучше хардкода
+</GoalsList>
+
+## 5.2 Data Layer — ресурсы данных
+
+Data Layer содержит ресурсы, описывающие игровые объекты без какой-либо логики. Все ресурсы наследуют `Resource` и используют `@export` для настройки в инспекторе. Это позволяет гейм-дизайнеру менять баланс, не трогая код, а программисту — ссылаться на типизированные данные вместо магических чисел. Каждый ресурс предоставляет вычисляемые свойства, которые инкапсулируют формулы баланса.
+
+### resources/tower_data.gd
+
+Ресурс TowerData описывает все параметры одного типа башни. Конкретные башни (Gun, Splash, Slow, Laser) отличаются только значениями в этом ресурсе, а не кодом. Методы `get_dps()`, `get_upgrade_cost()`, `get_damage_at_level()` и `get_range_at_level()` инкапсулируют формулы баланса, чтобы код башни не содержал вычислений.
+
+```gdscript
+class_name TowerData
+extends Resource
+
+@export var tower_name: String = "Gun Tower"
+@export var tower_scene: PackedScene
+@export var projectile_scene: PackedScene
+@export var cost: int = 100
+@export var damage: float = 15.0
+@export var attack_speed: float = 1.0  # атак в секунду
+@export var attack_range: float = 150.0
+@export var target_strategy: StringName = &"first"
+@export var splash_radius: float = 0.0  # 0 = одиночная цель
+@export var slow_factor: float = 1.0    # 1.0 = без замедления, 0.5 = 50% замедление
+@export var slow_duration: float = 0.0  # секунды действия замедления
+@export var projectile_speed: float = 300.0
+@export var upgrade_cost_multiplier: float = 0.6
+@export var upgrade_damage_multiplier: float = 1.5
+@export var upgrade_range_bonus: float = 15.0
+@export var icon: Texture2D
+@export var description: String = ""
+
+
+# Урон в секунду — ключевая метрика для сравнения башен
+func get_dps() -> float:
+	return damage * attack_speed
+
+
+# Стоимость улучшения зависит от текущего уровня
+# Формула: cost × multiplier × 1.3^level
+func get_upgrade_cost(current_level: int) -> int:
+	if current_level <= 0:
+		return cost
+	var multiplier := upgrade_cost_multiplier
+	for i in range(current_level):
+		multiplier *= 1.3
+	return int(cost * multiplier)
+
+
+# Урон на указанном уровне (экспоненциальный рост)
+func get_damage_at_level(level: int) -> float:
+	return damage * pow(upgrade_damage_multiplier, level)
+
+
+# Дальность на указанном уровне (линейный рост)
+func get_range_at_level(level: int) -> float:
+	return attack_range + upgrade_range_bonus * level
+```
+
+<Insight title="Data-driven дизайн: TowerData vs хардкод">
+Без TowerData код башни выглядел бы так: `if tower_type == "gun": damage = 15; range = 150`, а при добавлении нового типа — ещё один `elif`. С TowerData новая башня создаётся за минуту: дублируете .tres файл, меняете числа, и всё работает. Код башни не меняется вообще. Это принцип **Open/Closed**: открыт для расширения (новые данные), закрыт для изменения (код башни).
+</Insight>
+
+### resources/enemy_data.gd
+
+Ресурс EnemyData описывает параметры врага. Метод `get_health_per_gold()` используется для анализа баланса: чем выше HP за золото, тем «дороже» враг для игрока. `slow_resistance` определяет устойчивость к замедлению: 0 = полностью подвержен, 1 = полностью иммунен.
+
+```gdscript
+class_name EnemyData
+extends Resource
+
+@export var enemy_name: String = "Basic Enemy"
+@export var enemy_scene: PackedScene
+@export var max_health: float = 50.0
+@export var move_speed: float = 80.0
+@export var gold_reward: int = 15
+@export var lives_cost: int = 1       # сколько жизней теряет игрок
+@export var is_boss: bool = false
+@export var slow_resistance: float = 0.0  # 0 = подвержен, 1 = иммунен
+@export var sprite_color: Color = Color.RED
+@export var scale: float = 1.0
+
+
+# Метрика «HP за золото» — чем выше, тем выгоднее враг для игрока
+func get_health_per_gold() -> float:
+	if gold_reward <= 0:
+		return 0.0
+	return max_health / float(gold_reward)
+```
+
+### resources/wave_data.gd
+
+Ресурс WaveData описывает одну волну врагов. Массив `spawn_groups` определяет, какие враги и в каком количестве появляются. Методы `get_total_enemies()` и `get_total_gold()` используются WaveManager для отображения информации и расчёта дохода.
+
+```gdscript
+class_name WaveData
+extends Resource
+
+@export var wave_number: int = 1
+@export var spawn_groups: Array[SpawnGroup] = []
+@export var start_delay: float = 5.0
+@export var speed_bonus: int = 20  # золото за быстрый старт волны
+
+
+func get_total_enemies() -> int:
+	var total := 0
+	for group in spawn_groups:
+		total += group.count
+	return total
+
+
+func get_total_gold() -> int:
+	var total := 0
+	for group in spawn_groups:
+		if group.enemy_data:
+			total += group.enemy_data.gold_reward * group.count
+	return total
+```
+
+### resources/spawn_group.gd
+
+Ресурс SpawnGroup описывает одну группу врагов внутри волны. `interval` задаёт секунды между спавнами, а `delay_after` — паузу после последнего врага группы перед следующей группой.
+
+```gdscript
+class_name SpawnGroup
+extends Resource
+
+@export var enemy_data: EnemyData
+@export var count: int = 5
+@export var interval: float = 1.0   # секунд между спавнами
+@export var delay_after: float = 2.0 # пауза после последнего врага группы
+```
+
+## 5.3 Logic Layer — глобальные менеджеры
+
+Logic Layer содержит глобальные менеджеры, реализованные как Autoload. Каждый менеджер отвечает за свою подсистему и общается с другими через сигналы. Это обеспечивает слабую связанность: EconomyManager не знает о HUD, но HUD подписан на `balance_changed` и обновляет отображение при изменении баланса.
+
+### scripts/game_manager.gd (Autoload)
+
+GameManager управляет глобальным состоянием игры: жизни, пауза, поражение. Сигналы используются другими системами для реагирования на изменения. Метод `toggle_pause()` переключает паузу через `get_tree().paused`, а `process_mode = PROCESS_MODE_ALWAYS` позволяет менеджеру работать даже в паузе.
+
+```gdscript
+extends Node
+
+signal lives_changed(new_lives: int)
+signal game_over()
+signal game_paused(is_paused: bool)
+
+var lives: int = 20
+var is_paused: bool = false
+var current_wave: int = 0
+var is_game_over: bool = false
+
+
+func _ready() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
+
+
+func lose_life(amount: int = 1) -> void:
+	if is_game_over:
+		return
+	lives = maxi(lives - amount, 0)
+	lives_changed.emit(lives)
+	if lives <= 0:
+		_on_game_over()
+
+
+func _on_game_over() -> void:
+	is_game_over = true
+	game_over.emit()
+	get_tree().paused = true
+
+
+func toggle_pause() -> void:
+	if is_game_over:
+		return
+	is_paused = !is_paused
+	get_tree().paused = is_paused
+	game_paused.emit(is_paused)
+
+
+func reset_game() -> void:
+	lives = 20
+	current_wave = 0
+	is_game_over = false
+	is_paused = false
+	get_tree().paused = false
+
+
+func get_save_data() -> Dictionary:
+	return {
+		"lives": lives,
+		"current_wave": current_wave,
+		"is_game_over": is_game_over,
+	}
+
+
+func load_save_data(data: Dictionary) -> void:
+	lives = data.get("lives", 20)
+	current_wave = data.get("current_wave", 0)
+	is_game_over = data.get("is_game_over", false)
+	lives_changed.emit(lives)
+```
+
+### scripts/wave_manager.gd (Autoload)
+
+WaveManager реализован как конечный автомат (FSM) с тремя состояниями: **Idle** (ожидание между волнами), **Spawning** (спавн врагов текущей волны) и **Active** (все враги заспавнены, ожидание уничтожения). Переходы управляются таймерами и событиями. Метод `request_skip()` позволяет игроку досрочно запустить следующую волну за бонусное золото.
+
+```gdscript
+extends Node
+
+signal wave_started(wave_number: int)
+signal wave_completed(wave_number: int)
+signal all_waves_completed()
+
+enum State { IDLE, SPAWNING, ACTIVE }
+
+var current_state: State = State.IDLE
+var current_wave: int = 0
+var max_waves: int = 15
+var idle_timer: float = 0.0
+var skip_requested: bool = false
+var spawn_queue: Array[Dictionary] = []
+var spawn_timer: float = 0.0
+var wave_data_array: Array[WaveData] = []
+
+
+func _ready() -> void:
+	_load_wave_data()
+
+
+func _load_wave_data() -> void:
+	wave_data_array.clear()
+	for i in range(1, max_waves + 1):
+		var path := "res://resources/wave_%02d_data.tres" % i
+		if ResourceLoader.exists(path):
+			var data := load(path) as WaveData
+			if data:
+				wave_data_array.append(data)
+
+
+func _physics_process(delta: float) -> void:
+	match current_state:
+		State.IDLE:
+			idle_timer -= delta
+			if idle_timer <= 0.0 or skip_requested:
+				skip_requested = false
+				_start_wave()
+		State.SPAWNING:
+			_process_spawn_queue(delta)
+		State.ACTIVE:
+			if get_tree().get_nodes_in_group("enemies").is_empty():
+				_wave_completed()
+
+
+# Игрок пропускает ожидание — начинает волну досрочно
+func request_skip() -> void:
+	if current_state == State.IDLE:
+		skip_requested = true
+
+
+func _start_wave() -> void:
+	current_wave += 1
+	if current_wave > max_waves:
+		all_waves_completed.emit()
+		current_state = State.IDLE
+		return
+
+	if current_wave > wave_data_array.size():
+		current_state = State.IDLE
+		return
+
+	var wave: WaveData = wave_data_array[current_wave - 1]
+	wave_started.emit(current_wave)
+	GameManager.current_wave = current_wave
+
+	_build_spawn_queue(wave)
+	current_state = State.SPAWNING
+
+
+func _build_spawn_queue(wave: WaveData) -> void:
+	spawn_queue.clear()
+	for group in wave.spawn_groups:
+		for i in range(group.count):
+			spawn_queue.append({
+				"enemy_data": group.enemy_data,
+				"interval": group.interval,
+				"delay_after": group.delay_after if i == group.count - 1 else 0.0,
+			})
+	spawn_timer = wave.start_delay
+
+
+func _process_spawn_queue(delta: float) -> void:
+	if spawn_queue.is_empty():
+		current_state = State.ACTIVE
+		return
+
+	spawn_timer -= delta
+	if spawn_timer <= 0.0:
+		var entry: Dictionary = spawn_queue.pop_front()
+		var data: EnemyData = entry["enemy_data"]
+		_spawn_enemy(data)
+		spawn_timer = entry["interval"]
+		if entry["delay_after"] > 0.0:
+			spawn_timer += entry["delay_after"]
+
+
+func _spawn_enemy(data: EnemyData) -> void:
+	if not data or not data.enemy_scene:
+		return
+	var enemy: CharacterBody2D = data.enemy_scene.instantiate()
+	var spawn_point: Marker2D = get_tree().get_first_node_in_group("spawn_point") as Marker2D
+	var base_point: Marker2D = get_tree().get_first_node_in_group("base_point") as Marker2D
+
+	if spawn_point:
+		enemy.global_position = spawn_point.global_position
+	if base_point and enemy.has_node("NavigationAgent2D"):
+		var nav: NavigationAgent2D = enemy.get_node("NavigationAgent2D")
+		nav.target_position = base_point.global_position
+
+	enemy.add_to_group("enemies")
+	var enemies_container := get_tree().get_first_node_in_group("enemies_container")
+	if enemies_container:
+		enemies_container.add_child(enemy)
+	else:
+		get_tree().current_scene.add_child(enemy)
+
+
+func _wave_completed() -> void:
+	wave_completed.emit(current_wave)
+	EconomyManager.earn(wave_data_array[current_wave - 1].speed_bonus)
+	current_state = State.IDLE
+	idle_timer = 10.0  # секунд между волнами
+
+
+func get_save_data() -> Dictionary:
+	return {
+		"current_wave": current_wave,
+		"current_state": current_state,
+	}
+
+
+func load_save_data(data: Dictionary) -> void:
+	current_wave = data.get("current_wave", 0)
+	current_state = State.IDLE
+```
+
+<Callout type="tip" title="FSM — Конечный автомат WaveManager">
+FSM (Finite State Machine) — это паттерн, при котором объект может находиться только в одном из нескольких состояний, и переходы между состояниями чётко определены. В WaveManager три состояния: **Idle** → ожидает таймер или skip → **Spawning** → все враги заспавнены → **Active** → все враги уничтожены → **Idle**. Каждое состояние обрабатывается в своём блоке `match`, что делает код читаемым и расширяемым. Хотите добавить состояние `BossIntro`? Просто добавьте его в enum и в match.
+</Callout>
+
+### scripts/economy_manager.gd (Autoload)
+
+EconomyManager управляет балансом золота, расходами на башни и доходами от убийств. Метод `spend()` проверяет возможность оплаты и испускает сигнал `balance_changed`. Метод `get_sell_value()` вычисляет стоимость продажи с учётом коэффициента 0.7 (70% от вложенного).
+
+```gdscript
+extends Node
+
+signal balance_changed(new_balance: int)
+
+var balance: int = 200
+var sell_ratio: float = 0.7
+var total_earned: int = 0
+var total_spent: int = 0
+
+
+func can_afford(cost: int) -> bool:
+	return balance >= cost
+
+
+func spend(amount: int) -> bool:
+	if not can_afford(amount):
+		return false
+	balance -= amount
+	total_spent += amount
+	balance_changed.emit(balance)
+	return true
+
+
+func earn(amount: int) -> void:
+	balance += amount
+	total_earned += amount
+	balance_changed.emit(balance)
+
+
+func get_sell_value(total_invested: int) -> int:
+	return int(total_invested * sell_ratio)
+
+
+func reset() -> void:
+	balance = 200
+	total_earned = 0
+	total_spent = 0
+	balance_changed.emit(balance)
+
+
+func get_save_data() -> Dictionary:
+	return {
+		"balance": balance,
+		"total_earned": total_earned,
+		"total_spent": total_spent,
+	}
+
+
+func load_save_data(data: Dictionary) -> void:
+	balance = data.get("balance", 200)
+	total_earned = data.get("total_earned", 0)
+	total_spent = data.get("total_spent", 0)
+	balance_changed.emit(balance)
+```
+
+### scripts/path_manager.gd (Autoload)
+
+PathManager управляет навигационной областью и точками маршрута. Метод `setup()` вызывается один раз при инициализации карты. Метод `request_path_update()` перезапекает навигационный полигон при изменении карты.
+
+```gdscript
+extends Node
+
+var waypoints: Array[Vector2] = []
+var navigation_region: NavigationRegion2D = null
+
+
+func setup(region: NavigationRegion2D, points: Array[Vector2]) -> void:
+	navigation_region = region
+	waypoints = points
+
+
+func get_spawn_position() -> Vector2:
+	if waypoints.is_empty():
+		return Vector2.ZERO
+	return waypoints[0]
+
+
+func get_base_position() -> Vector2:
+	if waypoints.is_empty():
+		return Vector2.ZERO
+	return waypoints[waypoints.size() - 1]
+
+
+func request_path_update() -> void:
+	if navigation_region:
+		navigation_region.bake_navigation_polygon()
+```
+
+### scripts/tower_registry.gd (Autoload)
+
+TowerRegistry реализует паттерн **Factory**: хранит словарь TowerData по ключу (StringName) и предоставляет доступ к определениям башен. Магазин башен использует `get_all_tower_keys()` для построения списка кнопок, а логика размещения использует `get_tower_data()` для получения сцены и параметров.
+
+```gdscript
+extends Node
+
+var tower_data_map: Dictionary = {}  # StringName -> TowerData
+
+
+func _ready() -> void:
+	_register_towers()
+
+
+func _register_towers() -> void:
+	_load_tower_data(&"gun", "res://resources/tower_gun_data.tres")
+	_load_tower_data(&"splash", "res://resources/tower_splash_data.tres")
+	_load_tower_data(&"slow", "res://resources/tower_slow_data.tres")
+	_load_tower_data(&"laser", "res://resources/tower_laser_data.tres")
+
+
+func _load_tower_data(key: StringName, path: String) -> void:
+	if ResourceLoader.exists(path):
+		var data := load(path) as TowerData
+		if data:
+			tower_data_map[key] = data
+
+
+func get_tower_data(key: StringName) -> TowerData:
+	return tower_data_map.get(key) as TowerData
+
+
+func get_all_tower_keys() -> Array[StringName]:
+	var keys: Array[StringName] = []
+	for key in tower_data_map:
+		keys.append(key)
+	return keys
+```
+
+### scripts/audio_manager.gd (Autoload)
+
+AudioManager управляет звуковыми эффектами и фоновой музыкой. Использует пул из 8 AudioStreamPlayer для одновременного воспроизведения нескольких SFX. Если все каналы заняты, первый канал прерывается для воспроизведения нового звука. BGM воспроизводится через отдельный AudioStreamPlayer.
+
+```gdscript
+extends Node
+
+var sfx_players: Array[AudioStreamPlayer] = []
+var bgm_player: AudioStreamPlayer = null
+var max_sfx_channels: int = 8
+
+
+func _ready() -> void:
+	# Создаём пул SFX каналов
+	for i in range(max_sfx_channels):
+		var player := AudioStreamPlayer.new()
+		player.bus = "SFX"
+		add_child(player)
+		sfx_players.append(player)
+	# Отдельный плеер для фоновой музыки
+	bgm_player = AudioStreamPlayer.new()
+	bgm_player.bus = "BGM"
+	add_child(bgm_player)
+
+
+func play_sfx(stream: AudioStream, volume_db: float = 0.0) -> void:
+	# Ищем свободный канал
+	for player in sfx_players:
+		if not player.playing:
+			player.stream = stream
+			player.volume_db = volume_db
+			player.play()
+			return
+	# Все каналы заняты — прерываем первый
+	sfx_players[0].stream = stream
+	sfx_players[0].volume_db = volume_db
+	sfx_players[0].play()
+
+
+func play_bgm(stream: AudioStream) -> void:
+	if bgm_player.stream == stream and bgm_player.playing:
+		return  # Уже играет та же музыка
+	bgm_player.stream = stream
+	bgm_player.play()
+
+
+func stop_bgm() -> void:
+	bgm_player.stop()
+```
+
+<Callout type="info" title="8-канальный SFX пул — зачем?">
+В Tower Defense одновременно звучат: выстрелы башен (4+ типа), взрывы, замедление, смерть врагов, получение золота, старт волны. Если использовать один AudioStreamPlayer, звуки будут прерывать друг друга. Пул из 8 каналов позволяет воспроизводить до 8 звуков параллельно. Это не идеально — при 20+ одновременных событиях некоторые звуки всё равно прервутся, но для Tower Defense это приемлемый баланс между качеством и простотой.
+</Callout>
+
+## 5.4 Итог
+
+В этой главе мы реализовали два архитектурных слоя Tower Defense. Data Layer содержит чистые данные без логики — ресурсы TowerData, EnemyData, WaveData, SpawnGroup. Logic Layer содержит менеджеры с бизнес-логикой — GameManager, WaveManager, EconomyManager, PathManager, TowerRegistry, AudioManager. Разделение данных и логики — ключевой принцип, который делает код масштабируемым и тестируемым. В следующей главе мы реализуем Presentation Layer — башни, врагов и снаряды, которые визуализируют данные и реагируют на сигналы менеджеров.

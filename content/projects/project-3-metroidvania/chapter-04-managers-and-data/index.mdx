@@ -1,0 +1,462 @@
+---
+title: "Глава 4: Менеджеры и данные"
+project: "project-3-metroidvania"
+chapter: "chapter-04-managers-and-data"
+order: 4
+xp: 15
+estimatedTime: 50
+tags: ["Autoload", "Менеджеры", "Resource", "Data-классы", "Save/Load"]
+---
+
+
+## 4.1 Архитектура глобальных менеджеров
+
+Глобальные менеджеры — это основа архитектуры метроидвании. Каждый менеджер отвечает за одну область функциональности и предоставляет чёткий API для остальных систем. Все менеджеры реализованы как Autoload, что гарантирует их существование в единственном экземпляре и доступность из любого скрипта через глобальное имя. Менеджеры общаются между собой через сигналы, а не через прямые вызовы, что обеспечивает слабую связанность.
+
+<GoalsList>
+1. **Реализовать GameManager** — глобальное состояние, пауза, регистрация игрока
+2. **Реализовать AbilityManager** — разблокировка и проверка способностей
+3. **Реализовать SceneManager** — переходы между комнатами с затемнением
+4. **Реализовать InventoryManager** — инвентарь, стекирование, экипировка
+5. **Реализовать SaveManager** — сохранение и загрузка игрового прогресса
+6. **Создать Data-классы** — AbilityData, ItemData, EnemyData на основе Resource
+</GoalsList>
+
+<Insight title="Сигнальная коммуникация между менеджерами">
+Менеджеры общаются через сигналы, а не через прямые вызовы методов. Когда AbilityManager разблокирует способность, он эмитит сигнал `ability_unlocked`. На этот сигнал могут подписаться HUD (для отображения иконки), Player (для обновления max_jumps при двойном прыжке) и SaveManager (для автоматического сохранения). Прямой вызов `HUD.show_ability_icon()` создал бы жёсткую зависимость AbilityManager → HUD, а сигналы позволяют добавлять новых подписчиков без изменения источника.
+</Insight>
+
+## 4.2 GameManager
+
+GameManager — центральный менеджер, который отвечает за глобальное состояние игры: паузу, регистрацию игрока и координацию между системами. Это единственный менеджер, который напрямую хранит ссылку на объект Player. Остальные менеджеры получают доступ к игроку через `GameManager.player`.
+
+Ключевое решение: GameManager работает в режиме `PROCESS_MODE_ALWAYS`, чтобы кнопка паузы работала даже когда дерево приостановлено. Без этого режима `_unhandled_input` не обрабатывался бы при `get_tree().paused = true`, и игрок не смог бы снять паузу.
+
+```gdscript
+# game_manager.gd — центральный менеджер игры
+extends Node
+
+signal game_paused(is_paused: bool)
+signal player_died
+
+var is_paused: bool = false
+var player: CharacterBody2D
+
+func _ready() -> void:
+    # Важно: PROCESS_MODE_ALWAYS позволяет обрабатывать ввод даже при паузе
+    process_mode = Node.PROCESS_MODE_ALWAYS
+
+func pause_game() -> void:
+    is_paused = true
+    get_tree().paused = true
+    game_paused.emit(true)
+
+func resume_game() -> void:
+    is_paused = false
+    get_tree().paused = false
+    game_paused.emit(false)
+
+func toggle_pause() -> void:
+    if is_paused:
+        resume_game()
+    else:
+        pause_game()
+
+func register_player(p: CharacterBody2D) -> void:
+    player = p
+    # Обнуляем ссылку при удалении игрока из дерева
+    player.tree_exiting.connect(func(): player = null)
+
+func _unhandled_input(event: InputEvent) -> void:
+    if event.is_action_pressed("pause"):
+        toggle_pause()
+```
+
+<Callout type="tip" title="Метод register_player и сигнал tree_exiting">
+Метод `register_player` вызывается в `_ready()` игрока. Он сохраняет ссылку на Player и подключается к сигналу `tree_exiting`, чтобы обнулить ссылку, когда игрок удаляется из сцены. Без этого подключения обращение к `player` после его удаления вызовет ошибку «Attempt to call function on a null instance». Это стандартный паттерн для слабых ссылок в Godot.
+</Callout>
+
+## 4.3 AbilityManager
+
+AbilityManager управляет разблокировкой способностей и предоставляет метод `has_ability()` для проверки, доступна ли конкретная способность. Этот менеджер — ядро прогрессии в метроидвании: способность «двойной прыжок» открывает верхние платформы, «рывок» — широкие пропасти, «снаряды» — хрупкие стены, «Wall Jump» — вертикальные шахты.
+
+Словарь `_abilities` использует StringName в качестве ключа и bool в качестве значения — этого достаточно, поскольку нам нужно знать только факт разблокировки. Метод `get_save_data()` возвращает словарь для сериализации, а `load_save_data()` восстанавливает состояние и эмитит сигналы для каждого загруженного ability, чтобы UI и другие системы могли обновиться.
+
+```gdscript
+# ability_manager.gd — управление способностями
+extends Node
+
+signal ability_unlocked(ability_name: StringName)
+
+var _abilities: Dictionary = {}  # StringName -> bool
+
+func unlock_ability(name: StringName) -> void:
+    # Предотвращаем повторную разблокировку и повторную эмить сигнала
+    if _abilities.has(name):
+        return
+    _abilities[name] = true
+    ability_unlocked.emit(name)
+    print("Способность разблокирована: ", name)
+
+func has_ability(name: StringName) -> bool:
+    return _abilities.get(name, false)
+
+func get_save_data() -> Dictionary:
+    return _abilities.duplicate()
+
+func load_save_data(data: Dictionary) -> void:
+    _abilities = data
+    # Эмитим сигналы для обновления UI при загрузке
+    for ability_name in _abilities:
+        ability_unlocked.emit(StringName(ability_name))
+```
+
+<Callout type="info" title="Проверка _abilities.has(name) в unlock_ability">
+Эта проверка предотвращает повторную разблокировку и повторную эмить сигнала. Это важно, потому что на сигнале `ability_unlocked` подписан HUD, и повторная эмить привела бы к дублированию индикаторов способностей на экране. При загрузке данных мы эмитим сигналы для каждого ability, чтобы UI обновился — но при этом проверка `_abilities.has()` не сработает, потому что мы уже заполнили словарь до перебора.
+</Callout>
+
+## 4.4 SceneManager
+
+SceneManager управляет переходами между комнатами: выгружает текущую комнату, загружает новую, размещает игрока у точки входа и устанавливает границы камеры. Ключевой момент — FadeOverlay должен быть дочерним узлом SceneManager, а не ссылаться через `$NodeName`, что обеспечивает корректную работу при динамическом перестроении дерева.
+
+Переходы анимируются через Tween: сначала затемнение (0.25 сек), затем осветление (0.25 сек), что создаёт плавный эффект. Флаг `_transitioning` предотвращает повторный вход в функцию при быстром контакте с несколькими триггерами перехода.
+
+```gdscript
+# scene_manager.gd — управление переходами между комнатами
+extends Node
+
+signal room_changed(room_id: StringName)
+
+var current_room: Node2D
+var _transitioning: bool = false
+var _player: CharacterBody2D
+@onready var _fade: ColorRect = $FadeOverlay
+
+func setup(player: CharacterBody2D) -> void:
+    _player = player
+
+func transition_to(room_path: String, entry_point: StringName = &"default") -> void:
+    if _transitioning:
+        return
+    _transitioning = true
+
+    # Затемнение
+    var tween: Tween = create_tween()
+    tween.tween_property(_fade, "modulate:a", 1.0, 0.25)
+    await tween.finished
+
+    # Выгрузка текущей комнаты
+    if current_room:
+        current_room.queue_free()
+        await get_tree().process_frame  # Ждём удаления
+
+    # Загрузка новой комнаты
+    var room_scene: PackedScene = load(room_path)
+    current_room = room_scene.instantiate()
+    add_child(current_room)
+
+    # Размещение игрока у точки входа
+    var entry_path: String = "EntryPoints/" + str(entry_point)
+    var entry: Marker2D = current_room.get_node_or_null(entry_path)
+    if entry:
+        _player.global_position = entry.global_position
+
+    # Установка границ камеры
+    _setup_camera_limits(current_room)
+
+    # Осветление
+    var tween2: Tween = create_tween()
+    tween2.tween_property(_fade, "modulate:a", 0.0, 0.25)
+    await tween2.finished
+
+    _transitioning = false
+    room_changed.emit(current_room.room_id)
+
+func _setup_camera_limits(room: Node2D) -> void:
+    var limits_node: Node2D = room.get_node_or_null("CameraLimits")
+    if not limits_node:
+        return
+    var top_left: Marker2D = limits_node.get_node_or_null("TopLeft")
+    var bottom_right: Marker2D = limits_node.get_node_or_null("BottomRight")
+    if top_left and bottom_right:
+        _player.camera.limit_left = top_left.global_position.x
+        _player.camera.limit_top = top_left.global_position.y
+        _player.camera.limit_right = bottom_right.global_position.x
+        _player.camera.limit_bottom = bottom_right.global_position.y
+```
+
+<Callout type="tip" title="await get_tree().process_frame">
+Эта строка гарантирует, что старая комната полностью удалится из дерева перед загрузкой новой. Без этого ожидания возможны конфликты: старая комната ещё не удалена, а новая уже загружена, и оба узла могут пытаться управлять камерой или игроком. `process_frame` ждёт один кадр — достаточно для завершения `queue_free()`.
+</Callout>
+
+## 4.5 InventoryManager
+
+InventoryManager управляет инвентарём игрока: добавление и удаление предметов, проверка наличия, стекирование и экипировка. Поиск существующего предмета для стекирования использует цикл for, а не `find_custom()`, который возвращает индекс, а не сам элемент. Метод `has_item()` использует `Array.any()` с лямбдой для чистой проверки.
+
+```gdscript
+# inventory_manager.gd — управление инвентарём
+extends Node
+
+signal inventory_changed
+signal item_used(item: ItemData)
+
+var items: Array[ItemData] = []
+var equipment: Dictionary = {}  # slot_name -> ItemData
+var max_slots: int = 20
+
+func add_item(item: ItemData) -> bool:
+    # Проверяем лимит слотов
+    if items.size() >= max_slots:
+        return false
+
+    # Стекирование: если предмет уже есть и он stackable, увеличиваем количество
+    if item.stackable:
+        var existing: ItemData = null
+        for i in items:
+            if i.id == item.id:
+                existing = i
+                break
+        if existing:
+            existing.quantity += item.quantity
+            inventory_changed.emit()
+            return true
+
+    # Добавляем новый предмет
+    items.append(item)
+    inventory_changed.emit()
+    return true
+
+func remove_item(item: ItemData, qty: int = 1) -> void:
+    if item.stackable and item.quantity > qty:
+        item.quantity -= qty
+    else:
+        items.erase(item)
+    inventory_changed.emit()
+
+func has_item(item_id: StringName) -> bool:
+    return items.any(func(i): return i.id == item_id)
+
+func use_item(item: ItemData) -> void:
+    if not item in items:
+        return
+    match item.type:
+        ItemData.ItemType.CONSUMABLE:
+            item_used.emit(item)
+            remove_item(item)
+        ItemData.ItemType.KEY:
+            pass  # Ключи используются автоматически при взаимодействии с дверью
+        _:
+            pass
+
+func get_save_data() -> Dictionary:
+    var data: Array = []
+    for item in items:
+        data.append({"id": str(item.id), "quantity": item.quantity})
+    return {"items": data, "equipment": {}}
+
+func load_save_data(data: Dictionary) -> void:
+    items.clear()
+    equipment.clear()
+    # Загрузка предметов из данных (упрощённая — реальная реализация использует ResourceLoader)
+    inventory_changed.emit()
+```
+
+<Callout type="info" title="Стекирование и лимит слотов">
+Метод `add_item` проверяет `max_slots` перед добавлением и поддерживает стекирование: если предмет уже есть в инвентаре и он `stackable`, количество увеличивается вместо добавления нового элемента. Это важно для расходуемых предметов (зелья здоровья), которые игрок может найти несколько раз. Без стекирования инвентарь быстро заполнился бы одинаковыми предметами.
+</Callout>
+
+## 4.6 SaveManager
+
+SaveManager отвечает за сериализацию всего игрового состояния: позиция и здоровье игрока, инвентарь, разблокированные способности и состояние мира (какие враги убиты, какие предметы собраны, какие двери открыты). Данные сохраняются в JSON-файл `user://save_game.sav`.
+
+Структура `world_state` организована иерархически: первый уровень — ID комнаты, второй уровень — категория (killed_enemies, collected_items, opened_doors), третий уровень — массив ID. Это позволяет быстро проверять состояние конкретного объекта в конкретной комнате.
+
+```gdscript
+# save_manager.gd — сохранение и загрузка игры
+extends Node
+
+var world_state: Dictionary = {}  # room_id -> {killed_enemies: [], collected_items: [], opened_doors: []}
+
+func save_game() -> void:
+    var save_data: Dictionary = {
+        "player": {
+            "position_x": GameManager.player.global_position.x,
+            "position_y": GameManager.player.global_position.y,
+            "health": GameManager.player.health,
+            "max_health": GameManager.player.max_health,
+        },
+        "inventory": InventoryManager.get_save_data(),
+        "abilities": AbilityManager.get_save_data(),
+        "world_state": world_state,
+        "current_room": SceneManager.current_room.room_id,
+        "timestamp": Time.get_datetime_string_from_system()
+    }
+    var file: FileAccess = FileAccess.open("user://save_game.sav", FileAccess.WRITE)
+    if file:
+        file.store_string(JSON.stringify(save_data, "\t"))
+        file.close()
+
+func load_game() -> bool:
+    if not FileAccess.file_exists("user://save_game.sav"):
+        return false
+    var file: FileAccess = FileAccess.open("user://save_game.sav", FileAccess.READ)
+    if not file:
+        return false
+    var data: Dictionary = JSON.parse_string(file.get_as_text())
+    file.close()
+    if data.is_empty():
+        return false
+
+    # Восстановление менеджеров (порядок важен!)
+    AbilityManager.load_save_data(data.get("abilities", {}))
+    InventoryManager.load_save_data(data.get("inventory", {}))
+    world_state = data.get("world_state", {})
+
+    # Загрузка комнаты
+    var room_id: String = str(data.get("current_room", "start"))
+    SceneManager.transition_to("res://scenes/rooms/" + room_id + ".tscn", &"save_point")
+    await SceneManager.room_changed
+
+    # Восстановление игрока
+    if GameManager.player:
+        var player_data: Dictionary = data.get("player", {})
+        GameManager.player.global_position = Vector2(
+            float(player_data.get("position_x", 0)),
+            float(player_data.get("position_y", 0)))
+        GameManager.player.health = int(player_data.get("health", 5))
+        GameManager.player.max_health = int(player_data.get("max_health", 5))
+
+    return true
+
+# Методы маркировки событий (вызываются при наступлении событий)
+func mark_enemy_killed(room_id: StringName, enemy_id: String) -> void:
+    if not world_state.has(room_id):
+        world_state[room_id] = {}
+    if not world_state[room_id].has("killed_enemies"):
+        world_state[room_id]["killed_enemies"] = []
+    world_state[room_id]["killed_enemies"].append(enemy_id)
+
+func mark_item_collected(room_id: StringName, item_id: String) -> void:
+    if not world_state.has(room_id):
+        world_state[room_id] = {}
+    if not world_state[room_id].has("collected_items"):
+        world_state[room_id]["collected_items"] = []
+    world_state[room_id]["collected_items"].append(item_id)
+
+func mark_door_opened(room_id: StringName, door_id: String) -> void:
+    if not world_state.has(room_id):
+        world_state[room_id] = {}
+    if not world_state[room_id].has("opened_doors"):
+        world_state[room_id]["opened_doors"] = []
+    world_state[room_id]["opened_doors"].append(door_id)
+
+# Методы проверки состояния (вызываются при загрузке комнаты)
+func is_enemy_killed(room_id: StringName, enemy_id: String) -> bool:
+    var room: Dictionary = world_state.get(room_id, {})
+    return enemy_id in room.get("killed_enemies", [])
+
+func is_item_collected(room_id: StringName, item_id: String) -> bool:
+    var room: Dictionary = world_state.get(room_id, {})
+    return item_id in room.get("collected_items", [])
+
+func is_door_opened(room_id: StringName, door_id: String) -> bool:
+    var room: Dictionary = world_state.get(room_id, {})
+    return door_id in room.get("opened_doors", [])
+```
+
+<Callout type="warning" title="Порядок восстановления при загрузке">
+При загрузке игры данные восстанавливаются в строгом порядке: сначала способности и инвентарь (они нужны для корректной загрузки комнаты — например, закрытые двери проверяют `AbilityManager.has_ability`), затем комната (при загрузке комнаты проверяется `world_state` для восстановления объектов), затем позиция и здоровье игрока. Нарушение этого порядка приведёт к ошибкам: комната загрузится с неверным состоянием, а игрок может оказаться в неправильной позиции.
+</Callout>
+
+## 4.7 Data-классы (Resource)
+
+Data-классы — это мост между данными (настраиваемыми в редакторе) и логикой (выполняемой в коде). Все data-классы наследуют Resource и используют @export для открытия свойств в инспекторе. Это позволяет геймдизайнеру создавать .tres-файлы с конкретными параметрами врагов, предметов и способностей, не трогая код. Программист работает с типизированными данными, а не с магическими числами.
+
+<Insight title="Resource вместо захардкоженных констант">
+Представьте, что у вас 10 типов врагов с параметрами, записанными прямо в коде. Каждый раз, когда геймдизайнер хочет изменить скорость слизня, он просит программиста изменить код, перекомпилировать и перезапустить. С Resource-подходом геймдизайнер открывает .tres-файл в инспекторе Godot, меняет значение и перезапускает сцену — без участия программиста. Это разделяет ответственности и ускоряет итерации.
+</Insight>
+
+### AbilityData
+
+AbilityData описывает одну способность: её идентификатор, отображаемое имя, описание, иконку, тип (движение, бой, утилита) и ID комнаты, где она находится. Тип способности используется для классификации в UI, а room_id — для подсказок на мини-карте.
+
+```gdscript
+# ability_data.gd — данные способности
+class_name AbilityData
+extends Resource
+
+enum AbilityType { MOVEMENT, COMBAT, UTILITY }
+
+@export var id: StringName
+@export var display_name: String
+@export var description: String
+@export var icon: Texture2D
+@export var type: AbilityType
+@export var room_id: StringName  # Комната, где находится способность
+```
+
+Пример .tres-файла для двойного прыжка: `id = &"double_jump"`, `display_name = "Двойной прыжок"`, `description = "Позволяет совершить второй прыжок в воздухе"`, `type = MOVEMENT`, `room_id = &"forest_w"`. Создайте по одному .tres-файлу для каждой способности в каталоге `resources/abilities/`.
+
+### ItemData
+
+ItemData описывает предмет инвентаря. Поддерживает четыре типа: KEY (ключи для дверей), CONSUMABLE (расходуемые предметы, например зелья здоровья), EQUIPMENT (экипировка, например улучшение меча), UPGRADE (постоянные улучшения, например увеличение max_health). Словарь `effects` хранит произвольные эффекты предмета: `{"health_restore": 3}` для зелья или `{"max_health": 1}` для улучшения здоровья.
+
+```gdscript
+# item_data.gd — данные предмета
+class_name ItemData
+extends Resource
+
+enum ItemType { KEY, CONSUMABLE, EQUIPMENT, UPGRADE }
+
+@export var id: StringName
+@export var display_name: String
+@export var description: String
+@export var icon: Texture2D
+@export var type: ItemType
+@export var stackable: bool = false
+@export var quantity: int = 1
+@export var max_stack: int = 99
+@export var equipment_slot: StringName = &""
+@export var effects: Dictionary = {}
+```
+
+### EnemyData
+
+EnemyData описывает параметры врага. Каждый тип врага имеет свой .tres-файл с настроенными значениями. Knockback_force определяет, насколько сильно враг отбрасывает игрока при контакте, а xp_reward — количество опыта (если система опыта будет добавлена позже).
+
+```gdscript
+# enemy_data.gd — данные врага
+class_name EnemyData
+extends Resource
+
+@export var id: StringName
+@export var display_name: String
+@export var max_health: int = 2
+@export var damage: int = 1
+@export var move_speed: float = 50.0
+@export var chase_speed: float = 90.0
+@export var patrol_speed: float = 50.0
+@export var detection_range: float = 200.0
+@export var attack_range: float = 50.0
+@export var knockback_force: float = 200.0
+@export var xp_reward: int = 1
+```
+
+<Callout type="tip" title="Создание .tres-файлов">
+Для каждого типа врага создайте .tres-файл: правый клик в FileSystem → New Resource → выберите EnemyData → задайте имя (например, `slime.tres`). Заполните параметры в инспекторе. Аналогично для способностей и предметов. Это позволяет легко балансировать игру: достаточно изменить значение в .tres-файле и перезапустить сцену.
+</Callout>
+
+## 4.8 Сводная таблица менеджеров
+
+| Менеджер | Ключевой сигнал | Основной API | Зависимости |
+|----------|----------------|--------------|-------------|
+| GameManager | `game_paused`, `player_died` | `pause_game()`, `register_player()` | Нет |
+| AbilityManager | `ability_unlocked` | `unlock_ability()`, `has_ability()`, `get_save_data()` | Нет |
+| InventoryManager | `inventory_changed`, `item_used` | `add_item()`, `remove_item()`, `has_item()` | ItemData |
+| SceneManager | `room_changed` | `transition_to()`, `setup()` | GameManager |
+| SaveManager | — | `save_game()`, `load_game()`, `mark_*()`, `is_*()` | Все менеджеры |
+| AudioManager | — | `play_sfx()`, `play_bgm()` | Нет |
+
+---
+
+В следующей главе мы реализуем конечный автомат (FSM) для игрока — систему, которая управляет всеми состояниями персонажа от покоя до смерти. FSM — это сердце нашей метроидвании, и правильная его реализация определяет отзывчивость управления.

@@ -1,0 +1,299 @@
+---
+title: "Глава 3: Настройка проекта"
+project: "project-4-tower-defense"
+chapter: "chapter-03-project-setup"
+order: 3
+xp: 10
+estimatedTime: 30
+tags: ["настройка", "godot-4", "навигация", "autoload"]
+---
+
+
+## 3.1 Цели главы
+
+<GoalsList>
+1. **Создать проект** Godot 4.x с правильным рендерером для 2D Tower Defense
+2. **Настроить слои коллизий** — 6 специализированных слоёв для взаимодействий башен, врагов и снарядов
+3. **Сконфигурировать Input Map** — 6 действий для управления игрой
+4. **Создать структуру директорий** — scripts/, scenes/, resources/, assets/, cpp/
+5. **Зарегистрировать Autoload** — 6 глобальных менеджеров в правильном порядке
+6. **Настроить Audio Bus** — Master, BGM, SFX для управления звуком
+7. **Создать навигационную область** — NavigationRegion2D для S-образного пути из 8 waypoints
+</GoalsList>
+
+## 3.2 Создание проекта
+
+Запустите Godot 4.x и создайте новый проект. Выберите **Compatibility** renderer — он оптимален для 2D-игр, обеспечивает максимальную совместимость и не требует функций Vulkan, которые для 2D Tower Defense не нужны. Forward+ renderer добавляет накладные расходы без видимых преимуществ в 2D.
+
+**Параметры проекта:**
+- Имя: `tower_defense`
+- Renderer: **Compatibility**
+- Resolution: 1280×720 (landscape)
+- Stretch Mode: `canvas_items`
+- Stretch Aspect: `keep`
+
+<Callout type="tip" title="Почему Compatibility?">
+Compatibility renderer использует OpenGL вместо Vulkan. Для 2D-игр это означает: лучшую совместимость с разными GPU (включая интегрированные), стабильный FPS на слабых машинах и отсутствие проблем с драйверами. Vulkan-рендерер (Forward+) нужен для 3D с шейдерами — в нашем 2D проекте он только добавит задержку инициализации.
+</Callout>
+
+## 3.3 Слои коллизий
+
+Слои коллизий — это фундамент взаимодействия объектов в Tower Defense. Каждый объект занимает определённые слои (что он **есть**) и маски (с чем он **сталкивается**). Правильная настройка слоёв предотвращает ненужные коллизии и обеспечивает корректную работу боевой системы.
+
+| Слой | Имя | Кто использует (layer) | Кто обнаруживает (mask) |
+|---|---|---|---|
+| 1 | `player_towers` | TowerBase, TowerLaser | EnemyBase (обнаружение башней врагов через RangeArea) |
+| 2 | `terrain` | Terrain TileMapLayer, TowerSlot | Projectile (столкновение с terrain) |
+| 3 | `enemies` | EnemyBase | Tower RangeArea, Projectile Hurtbox |
+| 4 | `projectiles_player` | Projectile (снаряды башен) | EnemyBase Hurtbox |
+| 5 | `projectiles_enemy` | Резерв для вражеских снарядов | Player buildings (микровызов) |
+| 6 | `pickups` | Золото, бонусы | Player Area2D |
+
+**Настройка в Project → Project Settings → Layer Names → 2D Physics:**
+
+```
+Layer 1: player_towers
+Layer 2: terrain
+Layer 3: enemies
+Layer 4: projectiles_player
+Layer 5: projectiles_enemy
+Layer 6: pickups
+```
+
+<Insight title="Layer vs Mask — в чём разница?">
+**Layer** (слой) отвечает на вопрос «что я такое?» — на каких слоях объект *существует*. **Mask** (маска) отвечает на вопрос «с кем я сталкиваюсь?» — какие слои объект *обнаруживает*. TowerSlot находится на слое `terrain` (это часть карты), но его маска пуста — он не ищет коллизии, его обнаруживает клик мыши. Снаряд находится на слое `projectiles_player` и имеет маску `enemies` — он существует как снаряд и ищет столкновения с врагами.
+</Insight>
+
+### Пример настройки коллизий для ключевых объектов
+
+```
+TowerBase:
+  - RangeArea (Area2D):     layers: []          masks: [enemies]
+  - CollisionShape2D:       layers: [player_towers]  masks: []
+
+EnemyBase (CharacterBody2D):
+  - PhysicsBody:            layers: [enemies]    masks: []
+  - Hurtbox (Area2D):       layers: []           masks: [projectiles_player]
+
+Projectile (Area2D):
+  - Area2D:                 layers: [projectiles_player]  masks: [enemies]
+
+TowerSlot (Area2D):
+  - Area2D:                 layers: [terrain]    masks: []
+```
+
+## 3.4 Input Map
+
+Настройте действия ввода в **Project → Project Settings → Input Map**. Каждое действие привязано к конкретному ключу или кнопке мыши и используется скриптами через `Input.is_action_just_pressed()`.
+
+| Действие | Клавиша | Описание |
+|---|---|---|
+| `place_tower` | ЛКМ (Left Mouse Button) | Установить башню на выбранный слот |
+| `sell_tower` | ПКМ (Right Mouse Button) | Продать башню с выбранного слота |
+| `upgrade_tower` | U | Улучшить выбранную башню |
+| `start_wave` | Space | Запустить следующую волну досрочно |
+| `pause` | Escape | Поставить/снять паузу |
+| `speed_up` | Tab | Ускорить игру (×2) |
+
+```gdscript
+# Пример использования действий ввода в game_manager.gd
+func _unhandled_input(event: InputEvent) -> void:
+    if event.is_action_pressed("pause"):
+        toggle_pause()
+    elif event.is_action_pressed("speed_up"):
+        toggle_speed()
+```
+
+<Callout type="info" title="Почему ЛКМ для place_tower?">
+ЛКМ используется для установки, потому что в Tower Defense игрок сначала выбирает тип башни в магазине (щёлкая по кнопке), а затем щёлкает по слоту для размещения. Это двухшаговый процесс, а не перетаскивание. ПКМ для продажи интуитивен: «правая кнопка = отмена/удаление».
+</Callout>
+
+## 3.5 Структура директорий
+
+Правильная структура файлов с самого начала экономит часы навигации по проекту. В Tower Defense количество скриптов и ресурсов быстро растёт: 4 типа башен, 4+ типа врагов, 15 волн, менеджеры, C++ код. Без чёткой структуры вы потратите время на поиск нужного файла.
+
+```
+res://
+├── scenes/               # .tscn файлы — сцены
+│   ├── main.tscn
+│   ├── game_map.tscn
+│   ├── tower_slot.tscn
+│   ├── tower_gun.tscn
+│   ├── tower_splash.tscn
+│   ├── tower_slow.tscn
+│   ├── tower_laser.tscn
+│   ├── enemy_basic.tscn
+│   ├── enemy_fast.tscn
+│   ├── enemy_tank.tscn
+│   ├── enemy_boss.tscn
+│   ├── projectile_bullet.tscn
+│   ├── projectile_missile.tscn
+│   ├── hud.tscn
+│   └── tower_shop.tscn
+├── scripts/              # .gd файлы — логика
+│   ├── main.gd
+│   ├── game_manager.gd
+│   ├── wave_manager.gd
+│   ├── economy_manager.gd
+│   ├── path_manager.gd
+│   ├── audio_manager.gd
+│   ├── tower_registry.gd
+│   ├── save_manager.gd
+│   ├── tower.gd
+│   ├── tower_laser.gd
+│   ├── enemy_base.gd
+│   ├── projectile.gd
+│   ├── tower_slot.gd
+│   ├── hud.gd
+│   ├── tower_shop.gd
+│   ├── health_bar.gd
+│   ├── hurtbox.gd
+│   └── range_indicator.gd
+├── resources/            # .tres файлы — данные
+│   ├── tower_gun_data.tres
+│   ├── tower_splash_data.tres
+│   ├── tower_slow_data.tres
+│   ├── tower_laser_data.tres
+│   ├── enemy_basic_data.tres
+│   ├── enemy_fast_data.tres
+│   ├── enemy_tank_data.tres
+│   ├── enemy_boss_data.tres
+│   └── wave_01_data.tres ... wave_15_data.tres
+├── assets/               # Медиафайлы
+│   ├── images/
+│   ├── audio/
+│   └── fonts/
+├── cpp/                  # GDExtension исходный код
+│   ├── SConstruct
+│   ├── src/
+│   │   ├── register_types.cpp
+│   │   ├── register_types.h
+│   │   ├── path_finder.h
+│   │   ├── path_finder.cpp
+│   │   ├── projectile_sim.h
+│   │   └── projectile_sim.cpp
+│   ├── bin/
+│   └── td_cpp.gdextension
+└── project.godot
+```
+
+## 3.6 Регистрация Autoload
+
+Autoload — это механизм Godot для создания глобальных синглтонов. Каждый Autoload добавляется в дерево сцен **до** загрузки основной сцены, обеспечивая доступ из любого скрипта через имя класса. Порядок регистрации важен: если WaveManager использует EconomyManager, EconomyManager должен быть загружен первым.
+
+**Порядок регистрации в Project → Project Settings → Autoload:**
+
+| Порядок | Скрипт | Имя узла | Описание |
+|---|---|---|---|
+| 1 | `scripts/game_manager.gd` | `GameManager` | Состояние игры, жизни, пауза |
+| 2 | `scripts/wave_manager.gd` | `WaveManager` | Управление волнами врагов |
+| 3 | `scripts/economy_manager.gd` | `EconomyManager` | Баланс, доходы, расходы |
+| 4 | `scripts/path_manager.gd` | `PathManager` | Навигация, waypoints |
+| 5 | `scripts/tower_registry.gd` | `TowerRegistry` | Реестр определений башен |
+| 6 | `scripts/audio_manager.gd` | `AudioManager` | Звуковые эффекты и музыка |
+
+<Callout type="warning" title="Порядок загрузки имеет значение!">
+Godot загружает Autoload в порядке регистрации. Если `WaveManager._ready()` вызывает `EconomyManager.earn()`, а EconomyManager ещё не загружен — вы получите ошибку `null instance`. Всегда размещайте «зависимые» менеджеры после их зависимостей. GameManager и EconomyManager не имеют зависимостей — они идут первыми. WaveManager зависит от EconomyManager — идёт после.
+</Callout>
+
+## 3.7 Настройка Audio Bus
+
+Аудио-шины позволяют отдельно управлять громкостью фоновой музыки и звуковых эффектов. Это стандартная практика для игр: игрок должен иметь возможность настроить громкость музыки независимо от эффектов.
+
+**Создайте в нижней панели Audio → Bus:**
+
+| Шина | Родитель | Назначение | Volume по умолчанию |
+|---|---|---|---|
+| `Master` | — | Общая громкость | 0 dB |
+| `BGM` | Master | Фоновая музыка | -6 dB |
+| `SFX` | Master | Звуковые эффекты | 0 dB |
+
+```gdscript
+# Пример использования шин в audio_manager.gd
+func _ready() -> void:
+    for i in range(max_sfx_channels):
+        var player := AudioStreamPlayer.new()
+        player.bus = "SFX"        # Все SFX на шину SFX
+        add_child(player)
+        sfx_players.append(player)
+    bgm_player = AudioStreamPlayer.new()
+    bgm_player.bus = "BGM"        # Музыка на шину BGM
+    add_child(bgm_player)
+```
+
+## 3.8 NavigationRegion2D — S-образный путь
+
+NavigationRegion2D — это сердце движения врагов. Враги не движутся по жестко заданным точкам: они используют навигационную сетку, которая позволяет им огибать препятствия. В нашем Tower Defense путь один и не меняется, но навигация всё равно предпочтительнее ручных waypoints, потому что обеспечивает плавное движение и автоматическое вычисление направления.
+
+### Создание навигационной области
+
+1. Добавьте **NavigationRegion2D** как дочерний узел GameMap
+2. Создайте **NavigationPolygon** (дважды щёлкните по NavigationRegion в инспекторе)
+3. Нарисуйте навигационную область, покрывающую весь путь и зону вокруг него
+
+### S-образный путь из 8 waypoints
+
+Путь в форме буквы «S» создаёт интересный геймплей: враги идут зигзагом, и башни могут обстреливать их на поворотах. 8 waypoints определяют ключевые точки маршрута:
+
+```
+    Spawn (WP0)
+      │
+      ▼
+    WP1 ──────── WP2
+                  │
+                  ▼
+    WP4 ──────── WP3
+      │
+      ▼
+    WP5 ──────── WP6
+                  │
+                  ▼
+               Base (WP7)
+```
+
+**Координаты waypoints (для карты 1280×720):**
+
+```gdscript
+# В path_manager.gd — настройка waypoints
+const WAYPOINTS: Array[Vector2] = [
+    Vector2(100, 60),     # WP0: Spawn — точка появления
+    Vector2(100, 200),    # WP1: Первый поворот вниз-вправо
+    Vector2(1100, 200),   # WP2: Второй поворот вниз
+    Vector2(1100, 360),   # WP3: Третий поворот влево
+    Vector2(180, 360),    # WP4: Четвёртый поворот вниз
+    Vector2(180, 520),    # WP5: Пятый поворот вправо
+    Vector2(1100, 520),   # WP6: Шестой поворот вниз
+    Vector2(1100, 660),   # WP7: Base — база игрока
+]
+```
+
+<Callout type="tip" title="Запекание навигации">
+После отрисовки NavigationPolygon нажмите кнопку **Bake** в панели NavigationRegion2D. Без запекания враги не смогут двигаться! Если вы изменили форму полигона, запекание нужно повторить. В коде это можно сделать через `navigation_region.bake_navigation_polygon()`.
+</Callout>
+
+<Insight title="Почему NavigationAgent2D, а не ручной путь?">
+Ручное движение по waypoints (перелистывание массива точек) работает, но имеет ограничения: враги не могут огибать друг друга, возникают заторы на поворотах, а добавление нового типа врага с другим поведением требует дублирования кода. NavigationAgent2D автоматически вычисляет путь с учётом obstacles, обеспечивает плавное движение и позволяет врагам избегать столкновений друг с другом через avoidance. В следующем проекте (3D Приключение) навигация станет ещё важнее — Navigation3D использует тот же принцип.
+</Insight>
+
+### Настройка NavigationAgent2D для врагов
+
+Каждый враг содержит NavigationAgent2D, который получает целевую позицию (базу) и вычисляет путь через навигационную сетку:
+
+```gdscript
+# В enemy_base.gd — настройка навигационного агента
+@onready var nav_agent: NavigationAgent2D = $NavigationAgent2D
+
+func _ready() -> void:
+    nav_agent.path_desired_distance = 4.0
+    nav_agent.target_desired_distance = 8.0
+    nav_agent.velocity_computation_mode = NavigationAgent2D.VELOCITY_COMPUTATION_MODE_FLOAT
+    nav_agent.avoidance_enabled = true
+```
+
+## 3.9 Итог настройки
+
+После завершения всех шагов этой главы ваш проект будет готов к написанию кода. Вы создали фундамент: правильные слои коллизий обеспечат корректное взаимодействие объектов, Input Map позволит управлять игрой, Autoload менеджеры будут доступны глобально, а навигационная область позволит врагам двигаться по маршруту.
+
+<Challenge title="Настройте проект" difficulty="easy" xp={10}>
+Создайте новый проект Godot 4.x с Compatibility renderer. Настройте 6 слоёв коллизий, 6 действий ввода, зарегистрируйте 6 Autoload-менеджеров (создайте пустые скрипты-заглушки с `extends Node`) и создайте NavigationRegion2D с S-образным путём из 8 waypoints. Запустите проект — он должен открываться без ошибок.
+</Challenge>

@@ -1,0 +1,641 @@
+---
+title: "Глава 6: Башни и враги"
+project: "project-4-tower-defense"
+chapter: "chapter-06-towers-and-enemies"
+order: 6
+xp: 20
+estimatedTime: 60
+tags: ["башни", "враги", "снаряды", "Strategy", "навигация", "замедление"]
+---
+
+
+## 6.1 Цели главы
+
+<GoalsList>
+1. **Реализовать tower.gd** — базовая башня с 3 стратегиями выбора цели, атакой, улучшением, продажей и визуализацией дальности
+2. **Реализовать tower_laser.gd** — лазерная башня с непрерывным DPS и визуализацией Line2D
+3. **Реализовать enemy_base.gd** — враг с NavigationAgent2D, уроном, замедлением и прогрессом по пути
+4. **Реализовать projectile.gd** — самонаводящийся снаряд со splash-уроном, замедлением и falloff
+5. **Реализовать tower_slot.gd** — слот для размещения башен с обработкой кликов и подсветкой
+6. **Освоить Strategy pattern** — выбор цели без подклассов
+</GoalsList>
+
+## 6.2 scripts/tower.gd — базовая башня
+
+Скрипт башни — один из самых сложных в проекте. Он управляет обнаружением врагов через Area2D, выбором цели по стратегии, атакой с созданием снарядов и визуализацией дальности. Ключевой момент: башня не создаёт снаряды напрямую через хрупкую ссылку, а использует группу `"projectiles_container"` для поиска контейнера.
+
+```gdscript
+extends Node2D
+
+@export var tower_data: TowerData
+@export var level: int = 0
+
+var enemies_in_range: Array[CharacterBody2D] = []
+var current_target: CharacterBody2D = null
+var attack_timer: float = 0.0
+var show_range: bool = false
+var total_invested: int = 0
+
+@onready var muzzle: Marker2D = %Muzzle
+@onready var range_area: Area2D = %RangeArea
+@onready var attack_cooldown: Timer = %AttackCooldown
+@onready var turret_pivot: Node2D = %TurretPivot
+
+
+func _ready() -> void:
+	if tower_data:
+		total_invested = tower_data.cost
+		_setup_range()
+	range_area.body_entered.connect(_on_range_entered)
+	range_area.body_exited.connect(_on_range_exited)
+
+
+func _setup_range() -> void:
+	var shape := range_area.get_node("CollisionShape2D").shape as CircleShape2D
+	if shape:
+		shape.radius = tower_data.get_range_at_level(level)
+
+
+func _physics_process(delta: float) -> void:
+	if not tower_data:
+		return
+	attack_timer -= delta
+	_find_target()
+	if current_target:
+		_rotate_turret_toward(current_target.global_position)
+		if attack_timer <= 0.0:
+			_attack()
+			attack_timer = 1.0 / tower_data.attack_speed
+
+
+func _on_range_entered(body: Node2D) -> void:
+	if body.is_in_group("enemies") and body is CharacterBody2D:
+		if not enemies_in_range.has(body):
+			enemies_in_range.append(body)
+
+
+func _on_range_exited(body: Node2D) -> void:
+	if body in enemies_in_range:
+		enemies_in_range.erase(body)
+		if body == current_target:
+			current_target = null
+
+
+# Выбор цели по стратегии из TowerData
+func _find_target() -> void:
+	_clean_dead_enemies()
+	if enemies_in_range.is_empty():
+		current_target = null
+		return
+	match tower_data.target_strategy:
+		&"first":
+			current_target = _target_first()
+		&"last":
+			current_target = _target_last()
+		&"strongest":
+			current_target = _target_strongest()
+		_:
+			current_target = _target_first()
+
+
+# Очистка мёртвых/удалённых врагов из списка
+func _clean_dead_enemies() -> void:
+	var to_remove: Array[CharacterBody2D] = []
+	for e in enemies_in_range:
+		if not is_instance_valid(e) or e.is_queued_for_deletion():
+			to_remove.append(e)
+	for e in to_remove:
+		enemies_in_range.erase(e)
+
+
+# Стратегия «Первый» — враг ближе всего к базе (max path_progress)
+func _target_first() -> CharacterBody2D:
+	var best: CharacterBody2D = null
+	var best_progress: float = -1.0
+	for e in enemies_in_range:
+		if e.has_method("get_path_progress") and e.get_path_progress() > best_progress:
+			best_progress = e.get_path_progress()
+			best = e
+	return best
+
+
+# Стратегия «Последний» — враг дальше всего от базы (min path_progress)
+func _target_last() -> CharacterBody2D:
+	var best: CharacterBody2D = null
+	var best_progress: float = INF
+	for e in enemies_in_range:
+		if e.has_method("get_path_progress") and e.get_path_progress() < best_progress:
+			best_progress = e.get_path_progress()
+			best = e
+	return best
+
+
+# Стратегия «Сильнейший» — враг с максимальным HP
+func _target_strongest() -> CharacterBody2D:
+	var best: CharacterBody2D = null
+	var best_hp: float = -1.0
+	for e in enemies_in_range:
+		if e.has_method("get_current_health") and e.get_current_health() > best_hp:
+			best_hp = e.get_current_health()
+			best = e
+	return best
+
+
+func _rotate_turret_toward(target_pos: Vector2) -> void:
+	if turret_pivot:
+		turret_pivot.look_at(target_pos)
+
+
+# Атака — создание снаряда и отправка к цели
+func _attack() -> void:
+	if not current_target or not tower_data or not tower_data.projectile_scene:
+		return
+	var proj: Area2D = tower_data.projectile_scene.instantiate()
+	proj.global_position = muzzle.global_position
+	var projectiles_container := get_tree().get_first_node_in_group("projectiles_container")
+	if projectiles_container:
+		projectiles_container.add_child(proj)
+	else:
+		get_parent().add_child(proj)
+	if proj.has_method("initialize"):
+		proj.initialize(
+			current_target,
+			tower_data.get_damage_at_level(level),
+			tower_data.splash_radius,
+			tower_data.slow_factor,
+			tower_data.slow_duration,
+			tower_data.projectile_speed
+		)
+
+
+# Визуализация дальности атаки
+func _draw() -> void:
+	if show_range and tower_data:
+		var range := tower_data.get_range_at_level(level)
+		draw_circle(Vector2.ZERO, range, Color(1.0, 1.0, 1.0, 0.1))
+		draw_arc(Vector2.ZERO, range, 0.0, TAU, 64, Color(1.0, 1.0, 1.0, 0.3), 1.0)
+
+
+func set_show_range(value: bool) -> void:
+	show_range = value
+	queue_redraw()
+
+
+# Улучшение башни — увеличивает урон и дальность
+func upgrade() -> bool:
+	var upgrade_cost := tower_data.get_upgrade_cost(level + 1)
+	if not EconomyManager.can_afford(upgrade_cost):
+		return false
+	if not EconomyManager.spend(upgrade_cost):
+		return false
+	level += 1
+	total_invested += upgrade_cost
+	_setup_range()
+	queue_redraw()
+	return true
+
+
+# Продажа башни — возвращает 70% вложенного золота
+func sell() -> void:
+	var sell_value := EconomyManager.get_sell_value(total_invested)
+	EconomyManager.earn(sell_value)
+	queue_free()
+```
+
+<Callout type="tip" title="Strategy pattern в выборе цели">
+Три стратегии выбора цели реализованы через `match tower_data.target_strategy`. Обратите внимание: **стратегия определена в данных** (TowerData.target_strategy), а не в коде башни. Это означает, что вы можете создать новую башню с другой стратегией, просто изменив .tres файл — без написания нового кода. Это и есть паттерн Strategy: алгоритм (выбор цели) делегирован внешнему параметру.
+</Callout>
+
+## 6.3 scripts/tower_laser.gd — лазерная башня
+
+Лазерная башня использует непрерывный урон вместо снарядов. Она рисует луч (Line2D) от дула к цели и наносит урон каждый кадр, умноженный на delta. Это обеспечивает плавный DPS: если `tower_data.damage = 40`, то при 60 FPS башня наносит 40/60 ≈ 0.67 урона за кадр, что даёт 40 DPS.
+
+```gdscript
+extends Node2D
+
+@export var tower_data: TowerData
+@export var level: int = 0
+
+var enemies_in_range: Array[CharacterBody2D] = []
+var current_target: CharacterBody2D = null
+var show_range: bool = false
+var total_invested: int = 0
+var is_firing: bool = false
+
+@onready var muzzle: Marker2D = %Muzzle
+@onready var range_area: Area2D = %RangeArea
+@onready var turret_pivot: Node2D = %TurretPivot
+@onready var line_2d: Line2D = $Line2D
+
+
+func _ready() -> void:
+	if tower_data:
+		total_invested = tower_data.cost
+		_setup_range()
+	range_area.body_entered.connect(_on_range_entered)
+	range_area.body_exited.connect(_on_range_exited)
+	if line_2d:
+		line_2d.visible = false
+
+
+func _setup_range() -> void:
+	var shape := range_area.get_node("CollisionShape2D").shape as CircleShape2D
+	if shape:
+		shape.radius = tower_data.get_range_at_level(level)
+
+
+func _physics_process(delta: float) -> void:
+	if not tower_data:
+		return
+	_find_target()
+	if current_target and is_instance_valid(current_target):
+		_rotate_turret_toward(current_target.global_position)
+		_fire_laser(delta)
+	else:
+		_stop_laser()
+
+
+# Непрерывный огонь — урон каждый кадр × delta
+func _fire_laser(delta: float) -> void:
+	is_firing = true
+	if line_2d:
+		line_2d.visible = true
+		line_2d.clear_points()
+		# Локальные координаты для Line2D
+		line_2d.add_point(muzzle.global_position - global_position)
+		line_2d.add_point(current_target.global_position - global_position)
+	if current_target.has_method("take_damage"):
+		# Урон × delta = DPS
+		current_target.take_damage(tower_data.get_damage_at_level(level) * delta)
+
+
+func _stop_laser() -> void:
+	is_firing = false
+	if line_2d:
+		line_2d.visible = false
+
+
+func _on_range_entered(body: Node2D) -> void:
+	if body.is_in_group("enemies") and body is CharacterBody2D:
+		if not enemies_in_range.has(body):
+			enemies_in_range.append(body)
+
+
+func _on_range_exited(body: Node2D) -> void:
+	if body in enemies_in_range:
+		enemies_in_range.erase(body)
+		if body == current_target:
+			current_target = null
+
+
+func _find_target() -> void:
+	# Очистка мёртвых врагов
+	var to_remove: Array[CharacterBody2D] = []
+	for e in enemies_in_range:
+		if not is_instance_valid(e) or e.is_queued_for_deletion():
+			to_remove.append(e)
+	for e in to_remove:
+		enemies_in_range.erase(e)
+
+	if enemies_in_range.is_empty():
+		current_target = null
+		return
+	# Лазер всегда атакует сильнейшую цель для максимального DPS
+	current_target = _target_strongest()
+
+
+func _target_strongest() -> CharacterBody2D:
+	var best: CharacterBody2D = null
+	var best_hp: float = -1.0
+	for e in enemies_in_range:
+		if not is_instance_valid(e):
+			continue
+		if e.has_method("get_current_health") and e.get_current_health() > best_hp:
+			best_hp = e.get_current_health()
+			best = e
+	return best
+
+
+func _rotate_turret_toward(target_pos: Vector2) -> void:
+	if turret_pivot:
+		turret_pivot.look_at(target_pos)
+
+
+# Визуализация дальности
+func _draw() -> void:
+	if show_range and tower_data:
+		var range := tower_data.get_range_at_level(level)
+		draw_circle(Vector2.ZERO, range, Color(1.0, 1.0, 1.0, 0.1))
+		draw_arc(Vector2.ZERO, range, 0.0, TAU, 64, Color(1.0, 1.0, 1.0, 0.3), 1.0)
+
+
+func set_show_range(value: bool) -> void:
+	show_range = value
+	queue_redraw()
+```
+
+## 6.4 scripts/enemy_base.gd — базовый враг
+
+Скрипт врага управляет движением по навигации, получением урона, замедлением и смертью. `path_progress` отслеживает, как далеко враг прошёл по маршруту — используется башнями для стратегии First/Last. Флаг `is_dead` предотвращает двойной вызов `_die()`. Замедление учитывает `slow_resistance` врага: быстрые враги на 30% устойчивы к замедлению.
+
+```gdscript
+extends CharacterBody2D
+
+@export var enemy_data: EnemyData
+
+var current_health: float = 0.0
+var path_progress: float = 0.0  # 0..1 насколько далеко по пути
+var slow_timer: float = 0.0
+var current_slow_factor: float = 1.0
+var is_dead: bool = false
+
+signal enemy_died(reward: int)
+signal enemy_reached_base(lives_cost: int)
+signal health_changed(current: float, max_health: float)
+
+@onready var nav_agent: NavigationAgent2D = $NavigationAgent2D
+
+
+func _ready() -> void:
+	if enemy_data:
+		current_health = enemy_data.max_health
+		nav_agent.path_desired_distance = 4.0
+		nav_agent.target_desired_distance = 8.0
+		nav_agent.velocity_computation_mode = NavigationAgent2D.VELOCITY_COMPUTATION_MODE_FLOAT
+	add_to_group("enemies")
+
+
+func _physics_process(delta: float) -> void:
+	if is_dead:
+		return
+
+	# Обновление замедления
+	if slow_timer > 0.0:
+		slow_timer -= delta
+		if slow_timer <= 0.0:
+			current_slow_factor = 1.0
+
+	if nav_agent.is_navigation_finished():
+		_reached_base()
+		return
+
+	var next_pos: Vector2 = nav_agent.get_next_path_position()
+	var direction: Vector2 = (next_pos - global_position).normalized()
+	var speed: float = _get_current_speed()
+	velocity = direction * speed
+
+	# Обновление прогресса по пути
+	var base_point := get_tree().get_first_node_in_group("base_point") as Marker2D
+	if base_point:
+		var total_dist := nav_agent.distance_to_target()
+		# Приблизительная нормализация прогресса
+		path_progress = 1.0 - (total_dist / 1000.0)
+
+	nav_agent.set_velocity(velocity)
+
+
+func _get_current_speed() -> float:
+	if not enemy_data:
+		return 0.0
+	var speed := enemy_data.move_speed
+	# Применяем замедление с учётом устойчивости
+	var effective_slow := 1.0 - (1.0 - current_slow_factor) * (1.0 - enemy_data.slow_resistance)
+	return speed * effective_slow
+
+
+# Получение урона — вызывается снарядом или лазером
+func take_damage(amount: float) -> void:
+	if is_dead:
+		return
+	current_health = maxf(current_health - amount, 0.0)
+	health_changed.emit(current_health, enemy_data.max_health)
+	if current_health <= 0.0:
+		_die()
+
+
+# Применение замедления с учётом сопротивления
+func apply_slow(factor: float, duration: float) -> void:
+	if is_dead:
+		return
+	if enemy_data and enemy_data.slow_resistance >= 1.0:
+		return  # Иммунитет к замедлению
+	# Накладываем только более сильное замедление
+	current_slow_factor = minf(current_slow_factor, factor)
+	slow_timer = maxf(slow_timer, duration)
+
+
+func get_path_progress() -> float:
+	return path_progress
+
+
+func get_current_health() -> float:
+	return current_health
+
+
+func _die() -> void:
+	if is_dead:
+		return
+	is_dead = true
+	if enemy_data:
+		enemy_died.emit(enemy_data.gold_reward)
+		EconomyManager.earn(enemy_data.gold_reward)
+	remove_from_group("enemies")
+	queue_free()
+
+
+func _reached_base() -> void:
+	if is_dead:
+		return
+	is_dead = true
+	if enemy_data:
+		enemy_reached_base.emit(enemy_data.lives_cost)
+		GameManager.lose_life(enemy_data.lives_cost)
+	remove_from_group("enemies")
+	queue_free()
+```
+
+<Insight title="is_instance_valid() — безопасные ссылки на врагов">
+Когда снаряд летит к цели, цель может умереть от другого снаряда раньше, чем этот долетит. Если вы вызовете `target.take_damage()` после `target.queue_free()` — игра крашнется. Функция `is_instance_valid(target)` проверяет, что объект ещё существует в памяти. Всегда используйте эту проверку перед обращением к объектам, которые могут быть удалены другим кодом: `if is_instance_valid(target) and target.has_method("take_damage"): target.take_damage(damage)`.
+</Insight>
+
+## 6.5 scripts/projectile.gd — снаряд
+
+Скрипт снаряда управляет полётом к цели, столкновением и применением эффектов (урон, область поражения, замедление). Вместо прямого присвоения свойств используется метод `initialize()`, который типобезопасно устанавливает все параметры. Проверка `is_instance_valid()` предотвращает краш при уничтожении цели до попадания.
+
+```gdscript
+extends Area2D
+
+var target: CharacterBody2D = null
+var damage: float = 0.0
+var splash_radius: float = 0.0
+var slow_factor: float = 1.0
+var slow_duration: float = 0.0
+var speed: float = 300.0
+var lifetime: float = 5.0
+
+
+# Типобезопасная инициализация — вызывается башней после instantiate()
+func initialize(p_target: CharacterBody2D, p_damage: float, p_splash: float,
+		p_slow_factor: float, p_slow_duration: float, p_speed: float) -> void:
+	target = p_target
+	damage = p_damage
+	splash_radius = p_splash
+	slow_factor = p_slow_factor
+	slow_duration = p_slow_duration
+	speed = p_speed
+
+
+func _physics_process(delta: float) -> void:
+	lifetime -= delta
+	if lifetime <= 0.0:
+		queue_free()
+		return
+
+	# Проверяем, жива ли ещё цель
+	if not is_instance_valid(target) or target.is_queued_for_deletion():
+		queue_free()
+		return
+
+	# Самонаведение — летим к цели
+	var direction: Vector2 = (target.global_position - global_position).normalized()
+	global_position += direction * speed * delta
+
+	# Проверка достаточной близости для попадания
+	if global_position.distance_to(target.global_position) < 10.0:
+		_on_hit()
+
+
+func _on_hit() -> void:
+	# Splash-урон по области
+	if splash_radius > 0.0:
+		_apply_splash_damage()
+	else:
+		# Одиночный урон по цели
+		if is_instance_valid(target) and target.has_method("take_damage"):
+			target.take_damage(damage)
+
+	# Замедление
+	if slow_factor < 1.0:
+		_apply_slow_effect()
+
+	queue_free()
+
+
+# Splash-урон с линейным falloff: 100% в центре, 50% на краю
+func _apply_splash_damage() -> void:
+	var enemies := get_tree().get_nodes_in_group("enemies")
+	for enemy in enemies:
+		if not is_instance_valid(enemy):
+			continue
+		var dist := global_position.distance_to(enemy.global_position)
+		if dist <= splash_radius and enemy.has_method("take_damage"):
+			var falloff := 1.0 - (dist / splash_radius) * 0.5
+			enemy.take_damage(damage * falloff)
+
+
+# Замедление: по области для splash, одиночное для обычных снарядов
+func _apply_slow_effect() -> void:
+	if splash_radius > 0.0:
+		var enemies := get_tree().get_nodes_in_group("enemies")
+		for enemy in enemies:
+			if not is_instance_valid(enemy):
+				continue
+			var dist := global_position.distance_to(enemy.global_position)
+			if dist <= splash_radius and enemy.has_method("apply_slow"):
+				enemy.apply_slow(slow_factor, slow_duration)
+	else:
+		if is_instance_valid(target) and target.has_method("apply_slow"):
+			target.apply_slow(slow_factor, slow_duration)
+
+
+# Резервная обработка столкновений через Area2D
+func _on_area_entered(area: Area2D) -> void:
+	if area.is_in_group("hurtbox"):
+		var parent := area.get_parent()
+		if parent != target and splash_radius <= 0.0:
+			return  # Одноцелевые снаряды поражают только цель
+		_on_hit()
+```
+
+## 6.6 scripts/tower_slot.gd — слот для башни
+
+Слоты башен — это Area2D на карте, которые реагируют на клики и наведения. При клике на пустой слот магазин показывает доступные башни. При наведении на занятый слот отображается радиус атаки установленной башни. Сигнал `slot_selected` передаёт ссылку на себя в TowerShop.
+
+```gdscript
+extends Area2D
+
+signal slot_selected(slot: Area2D)
+
+var is_occupied: bool = false
+var placed_tower: Node2D = null
+
+@onready var collision_shape: CollisionShape2D = $CollisionShape2D
+@onready var highlight: Sprite2D = $Highlight
+
+
+func _ready() -> void:
+	if highlight:
+		highlight.visible = false
+	input_event.connect(_on_input_event)
+	mouse_entered.connect(_on_mouse_entered)
+	mouse_exited.connect(_on_mouse_exited)
+
+
+func _on_input_event(_viewport: Node, event: InputEvent, _shape_idx: int) -> void:
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		if not is_occupied:
+			slot_selected.emit(self)
+		elif placed_tower:
+			# Показать информацию о башне / апгрейд / продажа
+			slot_selected.emit(self)
+
+
+func _on_mouse_entered() -> void:
+	if highlight:
+		highlight.visible = true
+	# Показываем радиус башни при наведении
+	if placed_tower and placed_tower.has_method("set_show_range"):
+		placed_tower.set_show_range(true)
+
+
+func _on_mouse_exited() -> void:
+	if highlight:
+		highlight.visible = false
+	# Скрываем радиус башни
+	if placed_tower and placed_tower.has_method("set_show_range"):
+		placed_tower.set_show_range(false)
+
+
+# Размещение башни на слоте
+func place_tower(tower: Node2D) -> void:
+	placed_tower = tower
+	is_occupied = true
+	tower.global_position = global_position
+
+
+# Удаление башни со слота (при продаже)
+func remove_tower() -> void:
+	placed_tower = null
+	is_occupied = false
+
+
+# Обработка ПКМ — продажа башни
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("sell_tower") and is_occupied and placed_tower:
+		if highlight and highlight.visible:  # Только если курсор на слоте
+			if placed_tower.has_method("sell"):
+				placed_tower.sell()
+			remove_tower()
+```
+
+<Callout type="info" title="Почему initialize(), а не прямое присвоение?">
+В GDScript можно написать `proj.target = enemy` вместо `proj.initialize(enemy, ...)`. Но initialize() лучше по трём причинам: 1) **Типобезопасность** — вы не забудете передать параметр, компилятор проверит сигнатуру; 2) **Инкапсуляция** — внутренние переменные остаются private; 3) **Расширяемость** — при добавлении нового параметра вы меняете один метод, а не все места вызова.
+</Callout>
+
+## 6.7 Итог
+
+В этой главе мы реализовали Presentation Layer — визуальные компоненты, которые взаимодействуют с менеджерами через сигналы и методы. Башни обнаруживают врагов, выбирают цель по стратегии, атакуют снарядами или лазером. Враги движутся по навигации, получают урон, замедляются и умирают. Снаряды летят к цели, наносят splash-урон с falloff и применяют замедление. Слоты обрабатывают клики и управляют размещением. Все компоненты используют `is_instance_valid()` для безопасной работы с объектами, которые могут быть удалены в любой момент.
+
+<Challenge title="Система элементов" difficulty="medium" xp={15}>
+Добавьте систему из 4 элементов: **Огонь** (урон с течением времени, DoT), **Лёд** (замедление + шанс заморозки), **Молния** (цепная молния, поражает 3 ближайших врага), **Яд** (урон + усиление урона от других источников на 20%). Создайте `ElementData` (Resource) с полем `element_type: StringName` и методы для расчёта эффектов. Добавьте поле `element: ElementData` в TowerData и реализуйте комбо: Огонь+Яд = взрыв (мгновенный урон ×3), Лёд+Молния = статический разряд (заморозка всех в радиусе), Огонь+Молния = плазма (пробивание брони).
+</Challenge>

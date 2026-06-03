@@ -4,51 +4,18 @@
   "order": 6,
   "difficulty": "⭐⭐⭐⭐⭐+ Экспертный",
   "language": "C++",
-  "description": "Создайте демо производительности с ECS, многопоточностью, compute-шейдерами и профилированием — от GDScript до C++.",
-  "tags": [
-    "ECS",
-    "Многопоточность",
-    "Compute-шейдеры",
-    "Профилирование",
-    "C++",
-    "Оптимизация",
-    "Бенчмарки"
-  ],
+  "description": "Создайте симуляцию боя на 10 000 юнитов с ECS, compute-шейдерами и мультитредингом — 238 FPS.",
+  "tags": ["ECS", "C++", "Оптимизация", "Compute-шейдеры", "Мультитрединг", "MultiMesh", "Профайлинг"],
   "chapters": [
-    {
-      "slug": "introduction",
-      "title": "Введение",
-      "order": 0,
-      "xp": 5,
-      "estimatedTime": 10
-    },
-    {
-      "slug": "chapter-01-game-design",
-      "title": "Глава 1: Геймдизайн",
-      "order": 1,
-      "xp": 15,
-      "estimatedTime": 45
-    },
-    {
-      "slug": "chapter-02-architecture",
-      "title": "Глава 2: Архитектура",
-      "order": 2,
-      "xp": 15,
-      "estimatedTime": 40
-    },
-    {
-      "slug": "chapter-03-implementation",
-      "title": "Глава 3: Код и верификация",
-      "order": 3,
-      "xp": 30,
-      "estimatedTime": 200
-    }
+    { "slug": "introduction", "title": "Введение", "order": 0, "xp": 5, "estimatedTime": 15 },
+    { "slug": "chapter-01-game-design", "title": "Глава 1: Геймдизайн", "order": 1, "xp": 15, "estimatedTime": 50 },
+    { "slug": "chapter-02-architecture", "title": "Глава 2: Архитектура", "order": 2, "xp": 15, "estimatedTime": 45 },
+    { "slug": "chapter-03-project-setup", "title": "Глава 3: Настройка проекта", "order": 3, "xp": 10, "estimatedTime": 30 },
+    { "slug": "chapter-04-ecs-core", "title": "Глава 4: ECS ядро", "order": 4, "xp": 20, "estimatedTime": 60 },
+    { "slug": "chapter-05-advanced-optimization", "title": "Глава 5: Оптимизация", "order": 5, "xp": 20, "estimatedTime": 60 },
+    { "slug": "chapter-06-benchmarks", "title": "Глава 6: Бенчмарки", "order": 6, "xp": 15, "estimatedTime": 40 },
+    { "slug": "chapter-07-summary", "title": "Глава 7: Итоги курса", "order": 7, "xp": 10, "estimatedTime": 20 }
   ],
   "cheatSheet": "cheat-sheet.mdx",
-  "sprint": {
-    "slug": "sprint",
-    "title": "Финальный спринт: Свой бенчмарк",
-    "order": 99,
-    "xp": 100
-  }
+  "sprint": { "slug": "sprint", "title": "Финальный спринт: 40K Challenge", "order": 99, "xp": 100 }
 }

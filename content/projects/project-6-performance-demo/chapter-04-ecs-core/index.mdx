@@ -1,0 +1,790 @@
+---
+title: "Глава 4: ECS ядро"
+project: "project-6-performance-demo"
+chapter: "chapter-04-ecs-core"
+order: 4
+xp: 20
+estimatedTime: 60
+tags: []
+---
+
+
+## 4.1 Цели главы
+
+<GoalsList>
+1. **Понять концепцию ECS** — Entity = ID, Component = POD-данные, System = логика
+2. **Реализовать 6 компонентов** с SIMD-выравниванием и тривиальной копируемостью
+3. **Создать Registry** с типобезопасным ComponentPool (sparse set, type-safe)
+4. **Написать 4 системы** — Movement, Boid, Render, Combat
+5. **Реализовать SpatialHash** с Cantor pairing key для O(n×k) поиска соседей
+6. **Зарегистрировать всё в ClassDB** для интеграции с Godot
+</GoalsList>
+
+## 4.2 Концепция ECS
+
+Entity-Component-System — архитектурный паттерн, который разделяет данные и логику. В отличие от OOP, где объект объединяет и данные, и поведение, ECS хранит их отдельно:
+
+- **Entity** — просто целочисленный ID (`uint32_t`). Никаких данных, никаких методов. Сущность «существует», если её ID есть в списке живых.
+- **Component** — POD-структура (Plain Old Data) с тривиальной копируемостью. Никакой логики, только данные. Компоненты хранятся в непрерывных массивах для максимальной кэш-локальности.
+- **System** — функция (или класс с методом `update()`), которая обрабатывает все сущности с определённым набором компонентов. Система не хранит состояние — она только читает и пишет компоненты.
+
+```
+OOP подход (плохо для кэша):
+  Unit { position, velocity, health, mesh, ai_state, ... }
+  ↑ каждый Unit разбросан в куче, кэш-промахи при обходе
+
+ECS подход (хорошо для кэша):
+  Position[] = [p0, p1, p2, ..., p9999]  ← непрерывный массив
+  Velocity[] = [v0, v1, v2, ..., v9999]  ← непрерывный массив
+  Health[]   = [h0, h1, h2, ..., h9999]  ← непрерывный массив
+  ↑ MovementSystem обходит Position+Velocity → кэш-попадания
+```
+
+## 4.3 Компоненты
+
+Все компоненты спроектированы с учётом трёх принципов: 1) POD-тип для тривиального копирования, 2) SIMD-выравнивание (16/32 байта), 3) отсутствие зависимости от Godot API (используем `float[3]` вместо `Vector3`).
+
+```cpp
+// src/ecs/components.h
+#pragma once
+#include <cstdint>
+
+// Трансформация: позиция + кватернион + масштаб (40 байт)
+struct TransformComponent {
+    float position[3] = {0.0f, 0.0f, 0.0f};
+    float rotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};  // кватернион (x, y, z, w)
+    float scale[3] = {1.0f, 1.0f, 1.0f};
+};
+
+// Скорость: линейная + угловая (24 байта)
+struct VelocityComponent {
+    float linear[3] = {0.0f, 0.0f, 0.0f};
+    float angular[3] = {0.0f, 0.0f, 0.0f};
+};
+
+// Здоровье: текущее + максимум + флаг жизни (12 байт)
+struct HealthComponent {
+    float current = 100.0f;
+    float maximum = 100.0f;
+    bool alive = true;
+};
+
+// Рендеринг: тип меша + видимость (12 байт + padding до 16)
+struct RenderableComponent {
+    uint32_t mesh_index = 0;       // 0=infantry, 1=cavalry, 2=archer
+    uint32_t material_index = 0;
+    bool visible = true;
+    bool _padding[3] = {};         // Выравнивание до 16 байт для SIMD
+};
+
+// Параметры boids: веса правил + радиусы (16 байт + padding до 32)
+struct BoidComponent {
+    float separation_weight = 1.5f;
+    float alignment_weight = 1.0f;
+    float cohesion_weight = 0.8f;
+    float perception_radius = 5.0f;
+    float separation_radius = 1.5f;
+    float max_speed = 3.0f;
+    float _padding[2] = {};        // Выравнивание до 32 байт
+};
+
+// Время жизни: для снарядов и эффектов (8 байт)
+struct LifeComponent {
+    float current = 3.0f;
+    float maximum = 3.0f;
+};
+```
+
+### Примечания к дизайну компонентов
+
+1. **Выравнивание памяти:** Каждая структура выровнена через padding-поля. Это гарантирует правильное выравнивание для SIMD-операций (SSE/AVX). Без выравнивания `movaps` вместо `movups` вызовет SIGBUS на некоторых платформах.
+
+2. **C-массивы вместо Vector3:** Мы используем `float[3]` вместо `godot::Vector3`, потому что компоненты не должны зависеть от Godot API. Это позволяет обрабатывать их в фоновых потоках без ограничений Godot (большинство Godot API не потокобезопасно). Преобразование в `Vector3` происходит только в RenderSystem.
+
+3. **Нет виртуальных функций:** Все компоненты — POD-типы. `static_assert(std::is_trivially_copyable_v<T>)` в ComponentPool гарантирует это на этапе компиляции.
+
+<Callout type="info" title="SoA vs AoS — расположение данных">
+**AoS (Array of Structures):** `Unit[]` — каждый элемент содержит все поля подряд. Плохо для кэша, когда система обращается только к 2 из 10 полей.
+
+**SoA (Structure of Arrays):** `Position[], Velocity[], Health[]` — каждое поле в своём массиве. Идеально для кэша: MovementSystem обходит `Position[] + Velocity[]`, и в кэш-линию попадают только нужные данные.
+
+Мы используем SoA: каждый компонент — отдельный массив в ComponentPool.
+</Callout>
+
+<Insight title="Cache-friendly хранение компонентов">
+Процессор загружает данные из RAM кэш-линиями по 64 байта. При обходе массива `TransformComponent` (40 байт) одна кэш-линия содержит ~1.6 компонента. При обходе `position[3]` (12 байт) — ~5.3 позиции. Для MovementSystem, которой нужны только позиции и скорости, SoA даёт ~3× меньше кэш-промахов, чем AoS.
+</Insight>
+
+## 4.4 Registry и ComponentPool
+
+Registry — ядро ECS. Он управляет созданием/уничтожением сущностей и хранит компоненты в типизированных пулах. `ComponentPool<T>` реализует sparse set: быстрый O(1) доступ по EntityID, непрерывное хранение данных, swap-and-pop удаление.
+
+```cpp
+// src/ecs/core.h
+#pragma once
+#include <cstdint>
+#include <vector>
+#include <bitset>
+#include <typeindex>
+#include <type_traits>
+#include <unordered_map>
+#include <functional>
+
+using EntityID = uint32_t;
+constexpr EntityID INVALID_ENTITY = static_cast<EntityID>(-1);
+constexpr size_t MAX_COMPONENTS = 32;
+using ComponentMask = std::bitset<MAX_COMPONENTS>;
+
+// Базовый класс для type-erasure (стирание типов)
+class BaseComponentPool {
+public:
+    virtual ~BaseComponentPool() = default;
+    virtual void remove(EntityID id) = 0;
+    virtual bool has(EntityID id) const = 0;
+};
+
+// Типобезопасный пул компонентов — sparse set
+template<typename T>
+class ComponentPool : public BaseComponentPool {
+    // Компонент обязан быть тривиально копируемым
+    static_assert(std::is_trivially_copyable_v<T>,
+        "Component must be trivially copyable for Data Locality");
+
+    std::vector<T> data_;              // Плотный массив: компоненты подряд
+    std::vector<EntityID> entity_to_index_;  // Sparse: EntityID → индекс в data_
+    std::vector<EntityID> index_to_entity_;  // Обратное отображение
+    size_t size_ = 0;
+
+public:
+    explicit ComponentPool(size_t reserve_count = 0) {
+        if (reserve_count > 0) {
+            data_.reserve(reserve_count);
+            entity_to_index_.reserve(reserve_count);
+            index_to_entity_.reserve(reserve_count);
+        }
+    }
+
+    // Создать компонент на месте (emplace)
+    template<typename... Args>
+    T& emplace(EntityID id, Args&&... args) {
+        if (id >= entity_to_index_.size()) {
+            entity_to_index_.resize(id + 1, INVALID_ENTITY);
+        }
+        size_t index = size_++;
+        if (index >= data_.size()) {
+            data_.emplace_back(std::forward<Args>(args)...);
+            index_to_entity_.push_back(id);
+        } else {
+            data_[index] = T{std::forward<Args>(args)...};
+            index_to_entity_[index] = id;
+        }
+        entity_to_index_[id] = static_cast<EntityID>(index);
+        return data_[index];
+    }
+
+    // Получить компонент по EntityID — O(1)
+    T& get(EntityID id) {
+        return data_[entity_to_index_[id]];
+    }
+
+    const T& get(EntityID id) const {
+        return data_[entity_to_index_[id]];
+    }
+
+    bool has(EntityID id) const override {
+        if (id >= entity_to_index_.size()) return false;
+        return entity_to_index_[id] != INVALID_ENTITY;
+    }
+
+    // Удалить компонент — swap-and-pop O(1)
+    void remove(EntityID id) override {
+        if (!has(id)) return;
+        size_t index = entity_to_index_[id];
+        size_t last_index = size_ - 1;
+        if (index != last_index) {
+            // Переместить последний элемент на место удаляемого
+            data_[index] = data_[last_index];
+            EntityID last_entity = index_to_entity_[last_index];
+            entity_to_index_[last_entity] = static_cast<EntityID>(index);
+            index_to_entity_[index] = last_entity;
+        }
+        entity_to_index_[id] = INVALID_ENTITY;
+        --size_;
+    }
+
+    // Прямой доступ к плотному массиву для быстрой итерации
+    T* data() { return data_.data(); }
+    const T* data() const { return data_.data(); }
+    size_t size() const { return size_; }
+};
+```
+
+### Registry
+
+```cpp
+// Продолжение src/ecs/core.h
+
+class Registry {
+    std::vector<ComponentMask> masks_;
+    std::unordered_map<std::type_index, std::unique_ptr<BaseComponentPool>> pools_;
+    std::vector<bool> alive_;
+    EntityID next_id_ = 0;
+    size_t alive_count_ = 0;
+
+    // Получить указатель на пул типа T (или nullptr)
+    template<typename T>
+    ComponentPool<T>* get_pool_ptr() {
+        auto key = std::type_index(typeid(T));
+        auto it = pools_.find(key);
+        if (it == pools_.end()) return nullptr;
+        return static_cast<ComponentPool<T>*>(it->second.get());
+    }
+
+    // Получить или создать пул типа T
+    template<typename T>
+    ComponentPool<T>& ensure_pool(size_t reserve = 0) {
+        auto key = std::type_index(typeid(T));
+        auto it = pools_.find(key);
+        if (it == pools_.end()) {
+            pools_[key] = std::make_unique<ComponentPool<T>>(reserve);
+        }
+        return *static_cast<ComponentPool<T>*>(pools_[key].get());
+    }
+
+    // Счётчик для назначения уникальных ID компонентов
+    static size_t component_id_counter_;
+    template<typename T>
+    static size_t component_id() {
+        static size_t id = component_id_counter_++;
+        return id;
+    }
+
+public:
+    // Создать новую сущность
+    EntityID create() {
+        EntityID id = next_id_++;
+        if (id >= masks_.size()) {
+            masks_.resize(id + 1);
+            alive_.resize(id + 1, false);
+        }
+        masks_[id].reset();
+        alive_[id] = true;
+        ++alive_count_;
+        return id;
+    }
+
+    // Уничтожить сущность и все её компоненты
+    void destroy(EntityID id) {
+        if (id >= alive_.size() || !alive_[id]) return;
+        alive_[id] = false;
+        masks_[id].reset();
+        --alive_count_;
+        for (auto& [key, pool] : pools_) {
+            pool->remove(id);
+        }
+    }
+
+    bool is_alive(EntityID id) const {
+        if (id >= alive_.size()) return false;
+        return alive_[id];
+    }
+
+    size_t alive_count() const { return alive_count_; }
+
+    // Добавить компонент к сущности
+    template<typename T, typename... Args>
+    T& emplace(EntityID id, Args&&... args) {
+        auto& pool = ensure_pool<T>(10000);
+        masks_[id].set(component_id<T>());
+        return pool.emplace(id, std::forward<Args>(args)...);
+    }
+
+    // Получить компонент сущности
+    template<typename T>
+    T& get(EntityID id) {
+        return get_pool_ptr<T>()->get(id);
+    }
+
+    template<typename T>
+    bool has(EntityID id) const {
+        auto* pool = const_cast<Registry*>(this)->get_pool_ptr<T>();
+        return pool && pool->has(id);
+    }
+
+    template<typename T>
+    ComponentPool<T>* get_pool() {
+        return get_pool_ptr<T>();
+    }
+
+    // Итерация по всем сущностям с набором компонентов
+    template<typename... Ts, typename Func>
+    void view(Func&& func) {
+        ComponentMask required;
+        (required.set(component_id<Ts>()), ...);
+
+        for (EntityID id = 0; id < masks_.size(); ++id) {
+            if (!alive_[id]) continue;
+            if ((masks_[id] & required) != required) continue;
+            func(get_pool_ptr<Ts>()->get(id)...);
+        }
+    }
+
+    // Быстрая итерация по плотному массиву одного компонента
+    template<typename T, typename Func>
+    void view_single(Func&& func) {
+        auto* pool = get_pool_ptr<T>();
+        if (!pool) return;
+        T* data = pool->data();
+        for (size_t i = 0; i < pool->size(); ++i) {
+            func(data[i]);
+        }
+    }
+};
+
+// Инициализация статического счётчика
+inline size_t Registry::component_id_counter_ = 0;
+```
+
+## 4.5 Системы ECS
+
+Системы обрабатывают сущности с определённым набором компонентов. Каждая система имеет метод `update()`, который вызывается ECSWorld каждый кадр.
+
+### MovementSystem — параллельное обновление позиций
+
+```cpp
+// src/systems/movement_system.h
+#pragma once
+#include "../ecs/core.h"
+#include "../ecs/components.h"
+
+class MovementSystem {
+public:
+    // Обновление позиций через view() — однопоточное
+    void update(Registry& reg, double delta) {
+        reg.view<TransformComponent, VelocityComponent>(
+            [delta](TransformComponent& transform, VelocityComponent& velocity) {
+                transform.position[0] += velocity.linear[0] * static_cast<float>(delta);
+                transform.position[1] += velocity.linear[1] * static_cast<float>(delta);
+                transform.position[2] += velocity.linear[2] * static_cast<float>(delta);
+            });
+    }
+
+    // Параллельная версия — обновляет диапазон индексов
+    void update_range(Registry& reg, double delta,
+                      size_t start, size_t end) {
+        auto* pos_pool = reg.get_pool<TransformComponent>();
+        auto* vel_pool = reg.get_pool<VelocityComponent>();
+        if (!pos_pool || !vel_pool) return;
+
+        TransformComponent* positions = pos_pool->data();
+        VelocityComponent* velocities = vel_pool->data();
+        float dt = static_cast<float>(delta);
+        size_t count = std::min(end, std::min(pos_pool->size(), vel_pool->size()));
+
+        for (size_t i = start; i < count; ++i) {
+            positions[i].position[0] += velocities[i].linear[0] * dt;
+            positions[i].position[1] += velocities[i].linear[1] * dt;
+            positions[i].position[2] += velocities[i].linear[2] * dt;
+        }
+    }
+};
+```
+
+### BoidSystem — симуляция руления
+
+BoidSystem реализует три правила Крейга Рейнольдса: separation (разделение), alignment (выравнивание), cohesion (сплочённость). Веса правил: separation × 1.5, alignment × 1.0, cohesion × 0.8 — separation доминирует, чтобы юниты не перекрывались.
+
+```cpp
+// src/systems/boid_system.h
+#pragma once
+#include "../ecs/core.h"
+#include "../ecs/components.h"
+#include "../ecs/spatial_hash.h"
+
+class BoidSystem {
+    SpatialHash spatial_hash_;
+
+public:
+    void update(Registry& reg, double delta) {
+        // Шаг 1: перестроить пространственное хеширование
+        auto* transform_pool = reg.get_pool<TransformComponent>();
+        auto* boid_pool = reg.get_pool<BoidComponent>();
+        auto* vel_pool = reg.get_pool<VelocityComponent>();
+        if (!transform_pool || !boid_pool || !vel_pool) return;
+
+        spatial_hash_.clear();
+        size_t count = transform_pool->size();
+        TransformComponent* transforms = transform_pool->data();
+        BoidComponent* boids = boid_pool->data();
+        VelocityComponent* velocities = vel_pool->data();
+
+        for (size_t i = 0; i < count; ++i) {
+            spatial_hash_.insert(i,
+                transforms[i].position[0],
+                transforms[i].position[2]);  // XZ-плоскость
+        }
+
+        // Шаг 2: вычислить векторы руления для каждого boid
+        float dt = static_cast<float>(delta);
+        for (size_t i = 0; i < count; ++i) {
+            float my_x = transforms[i].position[0];
+            float my_z = transforms[i].position[2];
+
+            float sep_x = 0.0f, sep_z = 0.0f;
+            float ali_x = 0.0f, ali_z = 0.0f;
+            float coh_x = 0.0f, coh_z = 0.0f;
+            int neighbor_count = 0;
+
+            float perception_r = boids[i].perception_radius;
+            float separation_r = boids[i].separation_radius;
+            float perception_r_sq = perception_r * perception_r;
+
+            // Запрос соседей через SpatialHash (O(k), не O(n))
+            auto neighbors = spatial_hash_.query(my_x, my_z, perception_r);
+            for (size_t j : neighbors) {
+                if (j == i) continue;
+                float dx = my_x - transforms[j].position[0];
+                float dz = my_z - transforms[j].position[2];
+                float dist_sq = dx * dx + dz * dz;
+                if (dist_sq > perception_r_sq || dist_sq < 0.0001f) continue;
+
+                float dist = sqrtf(dist_sq);
+                neighbor_count++;
+
+                // Separation — отталкивание от ближайших
+                if (dist < separation_r) {
+                    float weight = 1.0f / dist;
+                    sep_x += dx * weight;
+                    sep_z += dz * weight;
+                }
+
+                // Alignment — средняя скорость соседей
+                ali_x += velocities[j].linear[0];
+                ali_z += velocities[j].linear[2];
+
+                // Cohesion — направление к центру масс соседей
+                coh_x += transforms[j].position[0];
+                coh_z += transforms[j].position[2];
+            }
+
+            if (neighbor_count == 0) continue;
+
+            float inv_n = 1.0f / static_cast<float>(neighbor_count);
+            float steer_x = 0.0f, steer_z = 0.0f;
+
+            // Separation (×1.5 — доминирующее правило)
+            steer_x += sep_x * boids[i].separation_weight;
+            steer_z += sep_z * boids[i].separation_weight;
+
+            // Alignment (×1.0)
+            ali_x *= inv_n; ali_z *= inv_n;
+            float ali_len = sqrtf(ali_x * ali_x + ali_z * ali_z);
+            if (ali_len > 0.001f) {
+                steer_x += (ali_x / ali_len) * boids[i].alignment_weight;
+                steer_z += (ali_z / ali_len) * boids[i].alignment_weight;
+            }
+
+            // Cohesion (×0.8)
+            coh_x = coh_x * inv_n - my_x;
+            coh_z = coh_z * inv_n - my_z;
+            float coh_len = sqrtf(coh_x * coh_x + coh_z * coh_z);
+            if (coh_len > 0.001f) {
+                steer_x += (coh_x / coh_len) * boids[i].cohesion_weight;
+                steer_z += (coh_z / coh_len) * boids[i].cohesion_weight;
+            }
+
+            // Применить руление к скорости
+            velocities[i].linear[0] += steer_x * dt;
+            velocities[i].linear[2] += steer_z * dt;
+
+            // Ограничить максимальную скорость
+            float speed = sqrtf(velocities[i].linear[0] * velocities[i].linear[0]
+                              + velocities[i].linear[2] * velocities[i].linear[2]);
+            if (speed > boids[i].max_speed) {
+                float scale = boids[i].max_speed / speed;
+                velocities[i].linear[0] *= scale;
+                velocities[i].linear[2] *= scale;
+            }
+        }
+    }
+};
+```
+
+### RenderSystem — обновление MultiMesh
+
+```cpp
+// src/systems/render_system.h
+#pragma once
+#include "../ecs/core.h"
+#include "../ecs/components.h"
+#include <godot_cpp/classes/multi_mesh.hpp>
+#include <godot_cpp/variant/transform3d.hpp>
+#include <godot_cpp/variant/vector3.hpp>
+
+using namespace godot;
+
+class RenderSystem {
+    std::vector<MultiMesh*> multimeshes_;
+
+public:
+    void set_multimesh(uint32_t type_index, MultiMesh* mm) {
+        if (type_index >= multimeshes_.size()) {
+            multimeshes_.resize(type_index + 1, nullptr);
+        }
+        multimeshes_[type_index] = mm;
+    }
+
+    void update(Registry& reg) {
+        for (uint32_t type = 0; type < multimeshes_.size(); ++type) {
+            MultiMesh* mm = multimeshes_[type];
+            if (!mm) continue;
+
+            int visible_count = 0;
+            int total = static_cast<int>(mm->get_instance_count());
+
+            reg.view<TransformComponent, RenderableComponent>(
+                [&](TransformComponent& transform, RenderableComponent& renderable) {
+                    if (renderable.mesh_index != type) return;
+                    if (!renderable.visible) return;
+                    if (visible_count >= total) return;
+
+                    Transform3D t;
+                    t.set_origin(Vector3(
+                        transform.position[0],
+                        transform.position[1],
+                        transform.position[2]));
+                    mm->set_instance_transform(visible_count, t);
+                    ++visible_count;
+                });
+
+            mm->set_visible_instance_count(visible_count);
+        }
+    }
+};
+```
+
+### CombatSystem — боевые столкновения
+
+```cpp
+// src/systems/combat_system.h
+#pragma once
+#include "../ecs/core.h"
+#include "../ecs/components.h"
+#include "../ecs/spatial_hash.h"
+
+class CombatSystem {
+public:
+    void update(Registry& reg, double delta, SpatialHash& spatial_hash) {
+        auto* health_pool = reg.get_pool<HealthComponent>();
+        auto* transform_pool = reg.get_pool<TransformComponent>();
+        if (!health_pool || !transform_pool) return;
+
+        HealthComponent* healths = health_pool->data();
+        TransformComponent* transforms = transform_pool->data();
+        size_t count = health_pool->size();
+        float dt = static_cast<float>(delta);
+
+        for (size_t i = 0; i < count; ++i) {
+            if (!healths[i].alive) continue;
+
+            // Поиск ближайших юнитов через SpatialHash
+            auto neighbors = spatial_hash.query(
+                transforms[i].position[0],
+                transforms[i].position[2],
+                2.0f);  // Радиус атаки
+
+            for (size_t j : neighbors) {
+                if (j == i || j >= count) continue;
+                if (!healths[j].alive) continue;
+
+                float dx = transforms[i].position[0] - transforms[j].position[0];
+                float dz = transforms[i].position[2] - transforms[j].position[2];
+                float dist_sq = dx * dx + dz * dz;
+                if (dist_sq < 1.0f) {
+                    // Наносим урон при контакте
+                    healths[j].current -= 5.0f * dt;
+                    if (healths[j].current <= 0.0f) {
+                        healths[j].current = 0.0f;
+                        healths[j].alive = false;
+                    }
+                }
+            }
+        }
+    }
+};
+```
+
+## 4.6 SpatialHash — пространственное хеширование
+
+SpatialHash преобразует O(n²) полный перебор соседей в O(n×k), где k — среднее число объектов в ячейке. Для 10 000 юнитов с радиусом восприятия 5 единиц и размером ячейки 5, k ≈ 15-20, что даёт ~500-700× ускорение по сравнению с O(n²).
+
+```cpp
+// src/ecs/spatial_hash.h
+#pragma once
+#include <vector>
+#include <unordered_map>
+#include <cmath>
+
+class SpatialHash {
+    float cell_size_;
+    std::unordered_map<int64_t, std::vector<size_t>> cells_;
+
+    // Cantor pairing function: биекция Z×Z → Z
+    // Гарантирует уникальный ключ для каждой ячейки (cx, cz)
+    int64_t cell_key(int cx, int cz) const {
+        int64_t a = static_cast<int64_t>(cx);
+        int64_t b = static_cast<int64_t>(cz);
+        return (a + b) * (a + b + 1) / 2 + b;
+    }
+
+public:
+    explicit SpatialHash(float cell_size = 5.0f) : cell_size_(cell_size) {}
+
+    void set_cell_size(float size) { cell_size_ = size; }
+    void clear() { cells_.clear(); }
+
+    // Вставить объект в хеш-таблицу
+    void insert(size_t entity_index, float x, float z) {
+        int cx = static_cast<int>(std::floor(x / cell_size_));
+        int cz = static_cast<int>(std::floor(z / cell_size_));
+        cells_[cell_key(cx, cz)].push_back(entity_index);
+    }
+
+    // Запросить все объекты в радиусе от точки
+    std::vector<size_t> query(float x, float z, float radius) const {
+        std::vector<size_t> result;
+        int min_cx = static_cast<int>(std::floor((x - radius) / cell_size_));
+        int max_cx = static_cast<int>(std::floor((x + radius) / cell_size_));
+        int min_cz = static_cast<int>(std::floor((z - radius) / cell_size_));
+        int max_cz = static_cast<int>(std::floor((z + radius) / cell_size_));
+
+        for (int cx = min_cx; cx <= max_cx; ++cx) {
+            for (int cz = min_cz; cz <= max_cz; ++cz) {
+                auto it = cells_.find(cell_key(cx, cz));
+                if (it != cells_.end()) {
+                    result.insert(result.end(),
+                                  it->second.begin(), it->second.end());
+                }
+            }
+        }
+        return result;
+    }
+};
+```
+
+### Анализ сложности SpatialHash
+
+| Подход | Сложность | 10K юнитов | 40K юнитов |
+| --- | --- | --- | --- |
+| Полный перебор O(n²) | O(n²) | 100 000 000 пар | 1 600 000 000 пар |
+| SpatialHash O(n×k) | O(n×k) | ~200 000 пар (k≈20) | ~800 000 пар (k≈20) |
+| Ускорение | — | 500× | 2000× |
+
+С ростом числа сущностей SpatialHash становится всё эффективнее: при фиксированной плотности k остаётся константой, и сложность растёт линейно O(n).
+
+## 4.7 ClassDB-биндинги
+
+Для интеграции ECS с Godot необходимо зарегистрировать C++-классы через `ClassDB`. ECSWorld и PerfMonitor — единственные классы, которые видны в GDScript.
+
+```cpp
+// src/nodes/ecs_world.h
+#pragma once
+#include <godot_cpp/classes/node.hpp>
+#include "../ecs/core.h"
+#include "../ecs/components.h"
+#include "../systems/movement_system.h"
+#include "../systems/boid_system.h"
+#include "../systems/render_system.h"
+#include "../systems/combat_system.h"
+
+using namespace godot;
+
+class ECSWorld : public Node {
+    GDCLASS(ECSWorld, Node);
+
+    Registry registry_;
+    MovementSystem movement_system_;
+    BoidSystem boid_system_;
+    RenderSystem render_system_;
+    CombatSystem combat_system_;
+
+    // Параметры, экспортируемые в инспектор
+    int infantry_count_ = 5000;
+    int cavalry_count_ = 3000;
+    int archer_count_ = 2000;
+    float sim_speed_ = 1.0f;
+    float battlefield_radius_ = 100.0f;
+
+protected:
+    static void _bind_methods() {
+        ClassDB::bind_method(D_METHOD("get_infantry_count"),
+                             &ECSWorld::get_infantry_count);
+        ClassDB::bind_method(D_METHOD("set_infantry_count", "count"),
+                             &ECSWorld::set_infantry_count);
+        ADD_PROPERTY(PropertyInfo(Variant::INT, "infantry_count"),
+                     "set_infantry_count", "get_infantry_count");
+
+        ClassDB::bind_method(D_METHOD("get_sim_speed"),
+                             &ECSWorld::get_sim_speed);
+        ClassDB::bind_method(D_METHOD("set_sim_speed", "speed"),
+                             &ECSWorld::set_sim_speed);
+        ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sim_speed", PROPERTY_HINT_RANGE, "0.1,5.0,0.1"),
+                     "set_sim_speed", "get_sim_speed");
+
+        ClassDB::bind_method(D_METHOD("get_alive_count"),
+                             &ECSWorld::get_alive_count);
+    }
+
+public:
+    void _ready() override {
+        // Создание сущностей с компонентами
+        _spawn_units();
+    }
+
+    void _process(double delta) override {
+        // Обновление всех систем
+        movement_system_.update(registry_, delta * sim_speed_);
+        boid_system_.update(registry_, delta * sim_speed_);
+        combat_system_.update(registry_, delta * sim_speed_, /* spatial_hash */);
+        render_system_.update(registry_);
+    }
+
+    int get_alive_count() const {
+        return static_cast<int>(registry_.alive_count());
+    }
+
+    // ... геттеры/сеттеры для экспортируемых параметров
+    int get_infantry_count() const { return infantry_count_; }
+    void set_infantry_count(int c) { infantry_count_ = c; }
+    float get_sim_speed() const { return sim_speed_; }
+    void set_sim_speed(float s) { sim_speed_ = s; }
+
+private:
+    void _spawn_units() {
+        // Создание пехоты (5K)
+        for (int i = 0; i < infantry_count_; ++i) {
+            auto id = registry_.create();
+            auto& tf = registry_.emplace<TransformComponent>(id);
+            tf.position[0] = (rand() % 200 - 100) * 1.0f;
+            tf.position[2] = (rand() % 200 - 100) * 1.0f;
+            registry_.emplace<VelocityComponent>(id);
+            registry_.emplace<HealthComponent>(id);
+            auto& rend = registry_.emplace<RenderableComponent>(id);
+            rend.mesh_index = 0;  // infantry
+            auto& boid = registry_.emplace<BoidComponent>(id);
+            boid.separation_weight = 1.5f;
+            boid.alignment_weight = 1.0f;
+            boid.cohesion_weight = 0.8f;
+        }
+        // Аналогично для cavalry (mesh_index=1) и archer (mesh_index=2)
+    }
+};
+```
+
+## 4.8 Итоги
+
+В этой главе мы реализовали ядро ECS: 6 компонентов с SIMD-выравниванием, Registry с типобезопасными ComponentPool (sparse set), 4 системы (Movement, Boid, Render, Combat), SpatialHash с Cantor pairing и ClassDB-биндинги для интеграции с Godot. Это основа, на которой в следующей главе мы добавим многопоточность и compute-шейдеры.
+
+<Challenge title="Spatial Hash на C++" difficulty="easy" xp={10}>
+Реализуйте SpatialHash с Cantor pairing key. Протестируйте на 10 000 точках: вставьте все точки, затем выполните 100 запросов с радиусом 5.0. Сравните время с полным перебором O(n²). Ожидаемый результат: SpatialHash в 200-500× быстрее.
+</Challenge>

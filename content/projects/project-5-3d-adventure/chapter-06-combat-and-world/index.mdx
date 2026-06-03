@@ -1,0 +1,563 @@
+---
+title: "Глава 6: Бой и мир"
+project: "project-5-3d-adventure"
+chapter: "chapter-06-combat-and-world"
+order: 6
+xp: 15
+estimatedTime: 50
+tags: []
+---
+
+## 6.1 Цели главы
+
+<GoalsList>
+1. **Hitbox3D / Hurtbox3D** — 3D-коллизии на слоях, Area3D-сигналы
+2. **5 зон мира** — различные параметры navmesh для каждой зоны
+3. **8 типов врагов + Тёмный Лорд** — 3 фазы, 500 HP
+4. **Боевая система на выносливости** — лёгкое комбо, тяжёлая атака, уклонение (i-frames), блок
+5. **Отбрасывание в 3D** — Vector3 направление от источника
+6. **Числа урона в 3D** — Label3D / SubViewport
+7. **Подбираемые предметы, способности, точки сохранения**
+8. **HUD** — полоски здоровья/выносливости, трекер квестов, мини-карта
+</GoalsList>
+
+## 6.2 Hitbox3D и Hurtbox3D
+
+Hitbox/Hurtbox — стандартный паттерн для боевых систем. **Hitbox3D** — это Area3D с коллайдером, которая активно наносит урон при пересечении с Hurtbox3D противника. **Hurtbox3D** — это Area3D, которая пассивно принимает урон. Разделение слоёв коллизий гарантирует, что Hitbox игрока не пересекается с Hurtbox игрока.
+
+<Callout type="warning" title="3D слои коллизий vs 2D">
+В 2D-проекте мы использовали те же принципы, но в 3D есть ключевое отличие: **Area3D использует `collision_layer` и `collision_mask` вместо `collision_mask` и `collision_layer` как в 2D**. Логика та же, но 3D-объекты часто находятся на нескольких слоях одновременно (оружие — слой projectiles + слой player). Всегда проверяйте, что Hitbox и Hurtbox находятся на **разных слоях** и **масках**, иначе персонаж будет бить сам себя.
+</Callout>
+
+### scripts/hitbox_3d.gd
+
+```gdscript
+extends Area3D
+
+## Hitbox3D — активно наносит урон при пересечении с Hurtbox3D
+
+signal hit_dealt(damage: int, hurtbox: Area3D)
+
+@export var damage: int = 10
+@export var knockback_force: float = 5.0
+## Время между повторными попаданиями по одной цели (сек)
+@export var hit_cooldown: float = 0.5
+
+var _hit_targets: Dictionary = {}  # hurtbox → время последнего попадания
+
+func _ready() -> void:
+    # Hitbox на слое 4 (projectiles), проверяет слой 3 (enemies) и 1 (player)
+    collision_layer = 4
+    collision_mask = 3  # enemies
+    area_entered.connect(_on_area_entered)
+
+func _on_area_entered(area: Area3D) -> void:
+    # Проверяем кулдаун попаданий по этой цели
+    var now := Time.get_ticks_msec() / 1000.0
+    if area in _hit_targets:
+        if now - _hit_targets[area] < hit_cooldown:
+            return  # Ещё на кулдауне
+
+    _hit_targets[area] = now
+
+    # Наносим урон через Hurtbox
+    if area.has_method("receive_hit"):
+        area.receive_hit(damage, get_parent(), knockback_force)
+
+    hit_dealt.emit(damage, area)
+```
+
+### scripts/hurtbox_3d.gd
+
+```gdscript
+extends Area3D
+
+## Hurtbox3D — пассивно принимает урон от Hitbox3D
+
+signal hit_received(damage: int, source: Node3D)
+
+func _ready() -> void:
+    # Hurtbox на слое 3 (enemies), проверяет слой 4 (projectiles / hitbox)
+    collision_layer = 3
+    collision_mask = 4
+    area_entered.connect(_on_area_entered)
+
+func _on_area_entered(area: Area3D) -> void:
+    if area.is_in_group("hitbox"):
+        # Hitbox сам вызывает receive_hit — дублируем для гибкости
+        pass
+
+func receive_hit(damage: int, source: Node3D, knockback: float = 5.0) -> void:
+    # Проверяем i-frames через CombatController владельца
+    var combat := _get_combat_controller()
+    if combat and combat.is_iframe():
+        return  # Кадры неуязвимости — урон не проходит
+
+    # Применяем урон с учётом блока
+    var final_damage := damage
+    if combat:
+        final_damage = combat.apply_damage(damage, source.get_global_position())
+
+    # Наносим урон HealthComponent
+    var health := _get_health_component()
+    if health:
+        health.take_damage(final_damage)
+
+    # Отбрасывание в 3D
+    _apply_knockback(source, knockback)
+
+    hit_received.emit(final_damage, source)
+
+func _apply_knockback(source: Node3D, force: float) -> void:
+    var body := get_parent() as CharacterBody3D
+    if not body:
+        return
+
+    # Направление от источника урона к жертве (Vector3)
+    var direction := (body.get_global_position() - source.get_global_position()).normalized()
+    direction.y = 0.0  # Отбрасывание только по горизонтали
+    direction = direction.normalized()
+
+    # Применяем импульс к скорости
+    var vel := body.get_velocity()
+    vel.x = direction.x * force
+    vel.z = direction.z * force
+    body.set_velocity(vel)
+
+func _get_combat_controller() -> Node:
+    var parent := get_parent()
+    if parent and parent.has_node("CombatController"):
+        return parent.get_node("CombatController")
+    return null
+
+func _get_health_component() -> Node:
+    var parent := get_parent()
+    if parent and parent.has_node("HealthComponent"):
+        return parent.get_node("HealthComponent")
+    return null
+```
+
+## 6.3 Зоны мира и NavMesh
+
+Мир состоит из 5 зон с уникальными параметрами навигационной сетки. Каждая зона — отдельная сцена с собственной NavigationRegion3D.
+
+| Зона | Области | cell_size | agent_radius | agent_max_slope | step_height | Особенности |
+|---|---|---|---|---|---|---|
+| Деревня | 3 | 0.25 | 0.5 | 30° | 0.4 | Крупная сетка, мало препятствий |
+| Лес | 3 | 0.25 | 0.4 | 45° | 0.5 | Корни, овраги, высокая точность |
+| Руины | 3 | 0.20 | 0.5 | 30° | 0.3 | Узкие проходы, мелкая сетка |
+| Катакомбы | 3 | 0.20 | 0.4 | 25° | 0.3 | Узкие коридоры, ступени |
+| Тёмная башня | 2 | 0.25 | 0.6 | 35° | 0.4 | Крупные враги, увеличенный радиус |
+
+### Настройка NavigationRegion3D
+
+```gdscript
+# Пример настройки navmesh для зоны «Лес» через код
+# В реальном проекте — настраивайте через инспектор NavigationRegion3D
+var nav_region = NavigationRegion3D.new()
+
+# Параметры запекания
+var bake_settings = NavigationMesh.new()
+bake_settings.cell_size = 0.25
+bake_settings.cell_height = 0.25
+bake_settings.agent_radius = 0.4
+bake_settings.agent_height = 1.8
+bake_settings.agent_max_slope = 45.0
+bake_settings.step_height = 0.5
+
+# Слои навигации (для фильтрации: какие агенты используют этот navmesh)
+bake_settings.filter_baking_aabb = AABB(Vector3(-50, -10, -50), Vector3(100, 20, 100))
+
+nav_region.set_navigation_mesh(bake_settings)
+add_child(nav_region)
+
+# Запекаем navmesh (длительная операция — вызывается один раз при загрузке зоны)
+nav_region.bake_navigation_mesh()
+```
+
+## 6.4 Враги
+
+### 8 типов врагов
+
+| Враг | HP | Урон | Скорость | Обнаружение | Поведение | Награда |
+|---|---|---|---|---|---|---|
+| Гоблин | 30 | 5 | 3.0 m/s | 8m | Патруль → Преследование → Атака | 10g, зелье (20%) |
+| Волк | 20 | 8 | 5.0 m/s | 12m | Стая (2–4), фланговая атака | 5g |
+| Скелет-воин | 60 | 10 | 2.5 m/s | 6m | Патруль → Блок → Контратака | 15g |
+| Скелет-лучник | 25 | 8 (стрела) | 2.0 m/s | 15m | Держит дистанцию, стреляет | 12g |
+| Призрак | 40 | 15 | 4.0 m/s | 10m | Телепорт, проходит сквозь стены | 20g |
+| Скелет-маг | 35 | 12 (магия) | 2.0 m/s | 12m | AOE-заклинание, отступает | 25g |
+| Тёмный рыцарь | 100 | 18 | 2.5 m/s | 8m | Блок, тяжёлая атака, комбо | 40g |
+| Тёмный Лорд | 500 | 25 | 3.0 m/s | — | 3 фазы, уникальные атаки | 200g + артефакт |
+
+### Босс: Тёмный Лорд (3 фазы)
+
+| Фаза | HP диапазон | Атаки | Скорость | Стратегия |
+|---|---|---|---|---|
+| 1 | 500 → 300 | Удар мечом, Рывок, Волна тьмы | 3.0 m/s | Уклоняйся от рывка, атакуй после волны |
+| 2 | 300 → 100 | + Призыв скелетов (2), Удар по земле (AOE) | 3.5 m/s | Убивай скелетов, уклоняйся от AOE |
+| 3 | 100 → 0 | + Телепорт за спину, Серия из 5 ударов | 4.0 m/s | Блокируй серию, тяжёлая атака после телепорта |
+
+```gdscript
+# scripts/boss_dark_lord.gd
+extends NPCController
+
+## Тёмный Лорд — босс с 3 фазами
+
+enum Phase { PHASE_1, PHASE_2, PHASE_3 }
+
+@export var max_health: int = 500
+var current_health: int = 500
+var current_phase: Phase = Phase.PHASE_1
+
+signal phase_changed(phase: int)
+
+func take_damage(amount: int) -> void:
+    current_health = max(0, current_health - amount)
+    _check_phase_transition()
+
+func _check_phase_transition() -> void:
+    var old_phase := current_phase
+
+    if current_health <= 100:
+        current_phase = Phase.PHASE_3
+    elif current_health <= 300:
+        current_phase = Phase.PHASE_2
+
+    if current_phase != old_phase:
+        phase_changed.emit(current_phase)
+        _on_phase_entered(current_phase)
+
+func _on_phase_entered(phase: Phase) -> void:
+    match phase:
+        Phase.PHASE_2:
+            # Фаза 2: призываем скелетов, увеличиваем скорость
+            move_speed = 3.5
+            _spawn_minions("skeleton_warrior", 2)
+        Phase.PHASE_3:
+            # Фаза 3: телепорт, серия ударов
+            move_speed = 4.0
+            damage = 30
+
+func _spawn_minions(enemy_id: String, count: int) -> void:
+    for i in range(count):
+        var spawn_pos := get_global_position() + Vector3(
+            randf_range(-5, 5), 0, randf_range(-5, 5))
+        # Инстанцируем врага из EnemyData.enemy_scene
+        pass
+```
+
+## 6.5 Боевая система на выносливости
+
+<Insight title="Выносливость добавляет тактическую глубину">
+Без выносливости игрок может бесконечно уклоняться и атаковать — бой превращается в спам. Выносливость заставляет принимать решения: уклониться (20 выносливости) или заблокировать (10)? Нанести тяжёлый удар (15) или дождаться лёгкого комбо? Спринт к врагу (15/сек) или подойти шагом? Менеджмент выносливости — разница между мастером боя и новичком. Восстановление быстрее вне боя (40/сек vs 25/сек), что создаёт ритм: агрессия → отступление → восстановление → агрессия.
+</Insight>
+
+### Комбо-система
+
+Лёгкое комбо состоит из 3 ударов с нарастающим множителем:
+
+```
+Удар 1: damage × 1.0 = 10 урона   (базовый)
+Удар 2: damage × 1.2 = 12 урона   (+20%)
+Удар 3: damage × 1.5 = 15 урона   (+50%)
+───────────────────────────────────────────
+Итого за комбо: 37 урона за ~1.5 сек
+```
+
+Окно комбо — 0.6 секунды между ударами. Если следующий удар не следует в течение окна, комбо сбрасывается.
+
+### Сравнение боевых действий
+
+| Действие | Урон | Стоимость | Кулдаун | Длительность |
+|---|---|---|---|---|
+| Лёгкая атака (1) | 10 | 0 | — | 0.3 сек |
+| Лёгкая атака (2) | 12 | 0 | — | 0.3 сек |
+| Лёгкая атака (3) | 15 | 0 | — | 0.4 сек |
+| Тяжёлая атака | 25 | 15 стамины | 0.8 сек | 0.6 сек |
+| Уклонение | — | 20 стамины | 0.5 сек | 0.3 сек (i-frames: 0.2 сек) |
+| Блок | — | 10 стамины/удар | — | Пока удерживается |
+
+## 6.6 Отбрасывание в 3D
+
+Отбрасывание (knockback) в 3D рассчитывается как вектор от источника урона к жертве. В отличие от 2D, где направление — просто знак (+1 или -1), в 3D это полный Vector3 на плоскости XZ.
+
+```cpp
+// Вычисление направления отбрасывания (в C++)
+Vector3 knockback_direction = (victim_pos - source_pos).normalized();
+knockback_direction.y = 0.0;  // Только горизонтальное отбрасывание
+knockback_direction.normalize();
+
+// Применение импульса
+Vector3 new_vel = victim->get_velocity();
+new_vel.x = knockback_direction.x * knockback_force;
+new_vel.z = knockback_direction.z * knockback_force;
+victim->set_velocity(new_vel);
+```
+
+Сила отбрасывания зависит от типа атаки:
+
+| Атака | Сила отбрасывания |
+|---|---|
+| Лёгкая атака (1, 2) | 2.0 м/с |
+| Лёгкая атака (3 — завершающая) | 5.0 м/с |
+| Тяжёлая атака | 8.0 м/с |
+| Удар босса | 10.0 м/с |
+
+## 6.7 Числа урона в 3D
+
+Числа урона (damage numbers) — плавающие тексты, появляющиеся над врагом при получении урона. В 3D это реализуется через `Label3D` или `SubViewport` + `Sprite3D`.
+
+### Способ 1: Label3D (проще, но ограничен)
+
+```gdscript
+# scripts/damage_number.gd
+extends Label3D
+
+## Плавающее число урона в 3D-пространстве
+
+var _lifetime: float = 1.0
+var _elapsed: float = 0.0
+var _velocity: Vector3 = Vector3(0, 2.0, 0)  # Движение вверх
+
+func _ready() -> void:
+    # Билборд — всегда повёрнут к камере
+    billboard = BaseMaterial3D.BILLBOARD_PARTICLES
+    font_size = 32
+    outline_size = 8
+
+func setup(damage: int, is_crit: bool = false) -> void:
+    text = str(damage)
+    if is_crit:
+        modulate = Color.YELLOW
+        font_size = 48
+    else:
+        modulate = Color.WHITE
+
+func _process(delta: float) -> void:
+    _elapsed += delta
+    position += _velocity * delta
+    _velocity.y -= 3.0 * delta  # Замедление
+
+    # Затухание
+    var alpha := 1.0 - (_elapsed / _lifetime)
+    modulate.a = alpha
+
+    if _elapsed >= _lifetime:
+        queue_free()
+```
+
+### Способ 2: SubViewport (лучшее качество текста)
+
+```gdscript
+# scripts/damage_number_sv.gd
+extends Sprite3D
+
+## Число урона через SubViewport — более чёткий текст
+
+@onready var _label: Label = $SubViewport/Label
+@onready var _viewport: SubViewport = $SubViewport
+
+var _lifetime: float = 1.0
+var _elapsed: float = 0.0
+
+func setup(damage: int, is_crit: bool = false) -> void:
+    _label.text = str(damage)
+    if is_crit:
+        _label.add_theme_color_override("font_color", Color.YELLOW)
+        _label.add_theme_font_size_override("font_size", 48)
+    else:
+        _label.add_theme_color_override("font_color", Color.WHITE)
+
+    # Ждём один кадр для рендера SubViewport
+    await get_tree().process_frame
+    texture = _viewport.get_texture()
+
+func _process(delta: float) -> void:
+    _elapsed += delta
+    position.y += 2.0 * delta
+
+    var alpha := 1.0 - (_elapsed / _lifetime)
+    modulate.a = alpha
+
+    if _elapsed >= _lifetime:
+        queue_free()
+```
+
+## 6.8 Подбираемые предметы, способности, точки сохранения
+
+### Подбираемые предметы
+
+```gdscript
+# scripts/pickable_item.gd
+extends Area3D
+
+## Подбираемый предмет в 3D-мире
+
+@export var item_data: ItemData
+@export var quantity: int = 1
+@export var respawn_time: float = 0.0  # 0 = не респавнится
+
+var _mesh_instance: MeshInstance3D
+var _collected: bool = false
+
+func _ready() -> void:
+    collision_layer = 16  # Слой items
+    collision_mask = 1    # Проверяем слой player
+    body_entered.connect(_on_body_entered)
+
+    # Визуальное представление
+    if item_data and item_data.world_scene:
+        var model := item_data.world_scene.instantiate()
+        add_child(model)
+    else:
+        # Резервная сфера
+        _mesh_instance = MeshInstance3D.new()
+        _mesh_instance.mesh = SphereMesh.new()
+        _mesh_instance.mesh.radius = 0.3
+        _mesh_instance.mesh.height = 0.6
+        add_child(_mesh_instance)
+
+    # Анимация парения
+    var tween := create_tween().set_loops()
+    tween.tween_property(self, "position:y", position.y + 0.2, 1.0)
+    tween.tween_property(self, "position:y", position.y - 0.2, 1.0)
+
+func _on_body_entered(body: Node3D) -> void:
+    if _collected or not body.is_in_group("player"):
+        return
+
+    # Добавляем в инвентарь
+    if InventorySystem.add_item(item_data.item_id, quantity):
+        _collected = true
+        AudioManager.play_sfx(preload("res://assets/audio/item_pickup.tres"))
+        _collect_animation()
+
+        if respawn_time > 0.0:
+            await get_tree().create_timer(respawn_time).timeout
+            _collected = false
+            visible = true
+
+func _collect_animation() -> void:
+    var tween := create_tween()
+    tween.tween_property(self, "scale", Vector3.ZERO, 0.2)
+    tween.tween_callback(func(): visible = false)
+```
+
+### Точки сохранения
+
+```gdscript
+# scripts/save_point.gd
+extends Area3D
+
+## Точка сохранения — взаимодействие через E / Y
+
+@export var save_point_id: StringName
+@export var heal_on_save: bool = true
+
+func _ready() -> void:
+    collision_layer = 32  # Слой triggers
+    collision_mask = 1    # Слой player
+    body_entered.connect(_on_body_entered)
+    body_exited.connect(_on_body_exited)
+
+func _on_body_entered(body: Node3D) -> void:
+    if body.is_in_group("player"):
+        # Показываем подсказку "Нажмите E для сохранения"
+        pass
+
+func _on_body_exited(body: Node3D) -> void:
+    if body.is_in_group("player"):
+        # Скрываем подсказку
+        pass
+
+func interact() -> void:
+    # Сохраняем игру
+    SaveManager.save_game(save_point_id)
+
+    # Восстанавливаем здоровье
+    if heal_on_save:
+        var health := get_tree().get_first_node_in_group("player").get_node("HealthComponent")
+        if health:
+            health.full_heal()
+
+    AudioManager.play_sfx(preload("res://assets/audio/save_point.tres"))
+```
+
+## 6.9 HUD
+
+HUD (Heads-Up Display) — 2D-оверлей поверх 3D-сцены, показывающий критическую информацию.
+
+### Дерево сцены HUD
+
+```
+CanvasLayer (HUD)
+├── HealthBar (ProgressBar)
+│   └── Value: player.health / player.max_health
+├── StaminaBar (ProgressBar)
+│   └── Value: player.stamina / player.max_stamina
+├── QuestTracker (VBoxContainer)
+│   ├── QuestTitle (Label)
+│   └── ObjectiveLabel (Label) × N
+├── Minimap (SubViewportContainer)
+│   └── SubViewport (Camera3D сверху вниз)
+├── GoldDisplay (Label)
+│   └── Text: "🪙 {gold}"
+└── Crosshair (CenterContainer)
+    └── TextureRect (точка прицела)
+```
+
+### scripts/hud.gd
+
+```gdscript
+extends CanvasLayer
+
+## HUD — обновляется через сигналы, не каждый кадр
+
+@onready var health_bar: ProgressBar = $HealthBar
+@onready var stamina_bar: ProgressBar = $StaminaBar
+@onready var quest_label: Label = $QuestTracker/QuestTitle
+@onready var objective_label: Label = $QuestTracker/ObjectiveLabel
+@onready var gold_label: Label = $GoldDisplay
+
+func _ready() -> void:
+    # Подключаем сигналы
+    var player := GameManager.player
+    if player:
+        # HealthComponent сигналы
+        var health := player.get_node("HealthComponent")
+        if health:
+            health.health_changed.connect(_on_health_changed)
+
+        # AdventureCharacter сигналы
+        player.stamina_changed.connect(_on_stamina_changed)
+
+    # EconomyManager сигнал
+    EconomyManager.balance_changed.connect(_on_gold_changed)
+    _on_gold_changed(EconomyManager.get_gold())
+
+    # QuestSystem сигналы
+    QuestSystem.quest_started.connect(_on_quest_started)
+    QuestSystem.objective_updated.connect(_on_objective_updated)
+
+func _on_health_changed(ratio: float) -> void:
+    health_bar.value = ratio * 100.0
+
+func _on_stamina_changed(ratio: float) -> void:
+    stamina_bar.value = ratio * 100.0
+
+func _on_gold_changed(amount: int) -> void:
+    gold_label.text = "🪙 %d" % amount
+
+func _on_quest_started(quest_id: StringName) -> void:
+    quest_label.text = "Квест: %s" % str(quest_id)
+
+func _on_objective_updated(quest_id: StringName, obj_index: int, current: int, required: int) -> void:
+    objective_label.text = "%d / %d" % [current, required]
+```
+
+## 6.10 Вызов
+
+<Challenge title="Парирование" difficulty="medium" xp={15}>
+Реализуйте механику парирования: если игрок нажимает «блок» в момент удара врага (окно 0.3 сек), удар отражается и враг оглушается на 2 секунды. Для этого: (1) Добавьте `parry_window: float = 0.3` в CombatController, (2) При `on_block_start()` запускайте таймер парирования, (3) В `apply_damage()` проверяйте, активно ли окно парирования, (4) При успешном парировании вызовите `NPCController.stun(2.0)` на атакующего врага, (5) Воспроизведите звук парирования и визуальный эффект (вспышка искр).
+</Challenge>

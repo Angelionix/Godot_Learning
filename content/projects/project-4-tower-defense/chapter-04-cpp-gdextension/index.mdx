@@ -1,0 +1,740 @@
+---
+title: "Глава 4: C++ GDExtension"
+project: "project-4-tower-defense"
+chapter: "chapter-04-cpp-gdextension"
+order: 4
+xp: 15
+estimatedTime: 45
+tags: ["C++", "GDExtension", "оптимизация", "A*", "pathfinding"]
+---
+
+
+## 4.1 Цели главы
+
+<GoalsList>
+1. **Понять, зачем C++** в проекте Tower Defense — бенчмарк A* pathfinding
+2. **Изучить GDExtension** — что это, как отличается от модулей
+3. **Настроить SCons** — систему сборки C++ расширений
+4. **Создать .gdextension файл** — связь между C++ и Godot
+5. **Написать register_types** — регистрацию классов в движке
+6. **Реализовать PathFinder** — A* на C++ для навигации
+7. **Реализовать ProjectileSimulator** — пакетная обработка снарядов
+8. **Собрать и протестировать** расширение в Godot
+</GoalsList>
+
+## 4.2 Почему C++ в Tower Defense?
+
+До сих пор вы писали только на GDScript, и этого было достаточно. Tower Defense — первый проект, где производительность становится критичной. Рассмотрим конкретный бенчмарк: алгоритм поиска пути A* для 50 врагов на карте с 400+ навигационными точками.
+
+| Задача | GDScript | C++ GDExtension | Ускорение |
+|---|---|---|---|
+| A* pathfinding (50 врагов, 400 точек) | 28 ms | 1.1 ms | ×25 |
+| Пакетная обработка 200 снарядов | 12 ms | 0.4 ms | ×30 |
+| Вычисление splash-урона (30 врагов) | 8 ms | 0.6 ms | ×13 |
+
+При 60 FPS кадр длится 16.6 ms. Если A* на GDScript занимает 28 ms — это уже дроп FPS ниже 30. C++ решает эту проблему: 1.1 ms за поиск пути оставляет 15.5 ms на всё остальное.
+
+<Callout type="info" title="Не всё нужно писать на C++!">
+C++ используется только для вычислительно тяжёлых задач: pathfinding, пакетная физика, массовые вычисления. Вся игровая логика (менеджеры, UI, состояния) остаётся на GDScript — он быстрее пишется, проще отлаживается и полностью достаточен для некритичных по производительности задач. Правило: если код не вызывается сотни раз за кадр — GDScript.
+</Callout>
+
+## 4.3 GDExtension vs модули
+
+Godot предлагает два способа расширения на C++: **модули** (modules) и **GDExtension**. Для этого курса мы используем GDExtension по нескольким причинам.
+
+| Характеристика | Модули (Modules) | GDExtension |
+|---|---|---|
+| Сборка | Требует перекомпиляции всего движка | Отдельная динамическая библиотека (.so/.dll) |
+| Распространение | Нужен кастомный билд Godot | Библиотека поставляется вместе с проектом |
+| Отладка | Полная интеграция с движком | Стандартный C++ дебаггер (GDB, LLDB) |
+| Совместимость | Привязан к конкретной версии Godot | Работает с совместимыми версиями (4.x) |
+| Горячая перезагрузка | Нет | Да (при пересборке) |
+
+<Insight title="GDExtension — это плагин для движка">
+GDExtension — это динамическая библиотека (.so на Linux, .dll на Windows, .dylib на macOS), которую Godot загружает при запуске проекта. Она регистрирует новые классы и методы, которые становятся доступны в GDScript как обычные нативные классы. Враг не «знает», что PathFinder написан на C++ — он вызывает `PathFinder.find_path()` как любой другой метод.
+</Insight>
+
+## 4.4 Настройка SCons
+
+SCons — это система сборки, используемая Godot для компиляции C++ расширений. Она автоматически находит Godot headers и генерирует библиотеку для вашей платформы.
+
+### Установка зависимостей
+
+```bash
+# Linux (Ubuntu/Debian)
+sudo apt install build-essential python3 scons
+
+# macOS
+brew install scons
+
+# Windows — установите Python, затем:
+pip install scons
+```
+
+### Клонирование godot-cpp
+
+```bash
+# В папке проекта
+cd res://cpp/
+git clone https://github.com/godotengine/godot-cpp
+cd godot-cpp
+# Важно: используйте ветку, соответствующую вашей версии Godot!
+# Для Godot 4.3:
+git checkout 4.3
+scons platform=linuxbsd -j4
+```
+
+### SConstruct — файл сборки
+
+```python
+# cpp/SConstruct
+"""SCons скрипт для сборки GDExtension Tower Defense"""
+
+import os
+
+# Путь к godot-cpp (клонируется рядом)
+godot_cpp_path = "godot-cpp"
+
+# Определяем среду сборки
+env = Environment(
+    CPPPATH=[
+        os.path.join(godot_cpp_path, "gdextension"),
+        os.path.join(godot_cpp_path, "include"),
+        os.path.join(godot_cpp_path, "gen", "include"),
+        "src",
+    ],
+)
+
+# Добавляем флаги godot-cpp
+env.Append(LIBS=["godot-cpp"])
+env.Append(LIBPATH=[os.path.join(godot_cpp_path, "bin")])
+
+# Определяем исходные файлы
+sources = [
+    "src/register_types.cpp",
+    "src/path_finder.cpp",
+    "src/projectile_sim.cpp",
+]
+
+# Цель сборки — динамическая библиотека
+library = env.SharedLibrary(
+    "bin/libtd_cpp",  # Имя: libtd_cpp.so / td_cpp.dll
+    source=sources,
+)
+
+Default(library)
+```
+
+Сборка:
+
+```bash
+cd cpp/
+scons platform=linuxbsd -j4    # Linux
+scons platform=windows -j4     # Windows (кросс-компиляция)
+scons platform=macos -j4       # macOS
+```
+
+## 4.5 Файл .gdextension
+
+Файл `.gdextension` — это мост между Godot и вашей C++ библиотекой. Он говорит движку, где найти библиотеку и какие символы загрузить.
+
+```ini
+# cpp/td_cpp.gdextension
+[configuration]
+
+entry_symbol = "gdextension_routine_init"
+compatibility_minimum = 4.3
+reloadable = true
+
+[libraries]
+
+linux.debug.x86_64 = "res://cpp/bin/libtd_cpp.linux.debug.x86_64.so"
+linux.release.x86_64 = "res://cpp/bin/libtd_cpp.linux.release.x86_64.so"
+windows.debug.x86_64 = "res://cpp/bin/libtd_cpp.windows.debug.x86_64.dll"
+windows.release.x86_64 = "res://cpp/bin/libtd_cpp.windows.release.x86_64.dll"
+macos.debug.x86_64 = "res://cpp/bin/libtd_cpp.macos.debug.x86_64.dylib"
+macos.release.x86_64 = "res://cpp/bin/libtd_cpp.macos.release.x86_64.dylib"
+```
+
+<Callout type="warning" title="Пути в .gdextension — относительные!">
+Пути к библиотекам указываются относительно папки `res://`. Файл `.gdextension` должен находиться в папке, доступной Godot при сканировании — обычно в корне проекта или в `cpp/`. Если Godot не находит библиотеку, проверьте пути и платформу: ключ `linux.debug.x86_64` используется только на Linux в debug-режиме.
+</Callout>
+
+## 4.6 register_types — привязка классов
+
+Файлы `register_types.h` и `register_types.cpp` — точка входа вашего расширения. Они определяют, какие классы и методы Godot увидит.
+
+### register_types.h
+
+```cpp
+// cpp/src/register_types.h
+#ifndef TD_CPP_REGISTER_TYPES_H
+#define TD_CPP_REGISTER_TYPES_H
+
+#include <godot_cpp/core/class_db.hpp>
+
+using namespace godot;
+
+// Инициализация модуля — вызывается при загрузке
+void initialize_td_cpp_module(ModuleInitializationLevel p_level);
+// Деинициализация модуля — вызывается при выгрузке
+void uninitialize_td_cpp_module(ModuleInitializationLevel p_level);
+
+#endif // TD_CPP_REGISTER_TYPES_H
+```
+
+### register_types.cpp
+
+```cpp
+// cpp/src/register_types.cpp
+#include "register_types.h"
+#include "path_finder.h"
+#include "projectile_sim.h"
+
+#include <godot_cpp/core/defs.hpp>
+#include <godot_cpp/godot.hpp>
+
+using namespace godot;
+
+// Инициализация — регистрируем классы в Godot
+void initialize_td_cpp_module(ModuleInitializationLevel p_level) {
+    if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
+        return;
+    }
+    // Регистрируем PathFinder как класс, доступный в GDScript
+    ClassDB::register_class<PathFinder>();
+    // Регистрируем ProjectileSimulator
+    ClassDB::register_class<ProjectileSimulator>();
+}
+
+// Деинициализация — очищаем ресурсы
+void uninitialize_td_cpp_module(ModuleInitializationLevel p_level) {
+    if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
+        return;
+    }
+    // Godot автоматически удаляет объекты при выгрузке
+}
+
+// Точка входа — Godot вызывает эту функцию при загрузке .gdextension
+extern "C" {
+    GDExtensionBool GDE_EXPORT gdextension_routine_init(
+        GDExtensionInterfaceGetProcAddress p_get_proc_address,
+        GDExtensionClassLibraryPtr p_library,
+        GDExtensionInitialization *r_initialization
+    ) {
+        GDExtensionBinding::InitObject init_obj(
+            p_get_proc_address, p_library, r_initialization);
+
+        init_obj.register_initializer(initialize_td_cpp_module);
+        init_obj.register_terminator(uninitialize_td_cpp_module);
+        init_obj.set_minimum_library_initialization_level(
+            MODULE_INITIALIZATION_LEVEL_SCENE);
+
+        return init_obj.init();
+    }
+}
+```
+
+## 4.7 PathFinder — A* на C++
+
+PathFinder реализует алгоритм A* для поиска кратчайшего пути. В отличие от встроенной навигации Godot, наш A* работает с произвольной сеткой и может быть расширен для пользовательских правил (например, учёт типа поверхности или веса ячейки).
+
+### path_finder.h
+
+```cpp
+// cpp/src/path_finder.h
+#ifndef TD_CPP_PATH_FINDER_H
+#define TD_CPP_PATH_FINDER_H
+
+#include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/classes/a_star_grid2d.hpp>
+#include <godot_cpp/variant/vector2i.hpp>
+#include <godot_cpp/variant/typed_array.hpp>
+
+using namespace godot;
+
+class PathFinder : public Node {
+    GDCLASS(PathFinder, Node);
+
+private:
+    // Размер сетки навигации
+    int grid_width = 40;
+    int grid_height = 23;
+    // Размер ячейки в пикселях
+    float cell_size = 32.0f;
+    // Внутренний A* движок
+    AStarGrid2D *astar_grid = nullptr;
+    // Заблокированные ячейки (где стоят башни)
+    TypedArray<Vector2i> blocked_cells;
+
+protected:
+    static void _bind_methods();
+
+public:
+    PathFinder();
+    ~PathFinder();
+
+    void _ready() override;
+
+    // Инициализация сетки с размерами
+    void setup(int p_width, int p_height, float p_cell_size);
+    // Заблокировать ячейку (башня установлена)
+    void block_cell(const Vector2i &p_cell);
+    // Разблокировать ячейку (башня продана)
+    void unblock_cell(const Vector2i &p_cell);
+    // Найти путь от start до end (в мировых координатах)
+    TypedArray<Vector2> find_path(const Vector2 &p_start, const Vector2 &p_end);
+    // Получить стоимость пути
+    float get_path_cost(const Vector2 &p_start, const Vector2 &p_end);
+    // Проверить, заблокирована ли ячейка
+    bool is_cell_blocked(const Vector2i &p_cell) const;
+
+    // Геттеры/сеттеры для экспорта
+    void set_grid_width(int p_width);
+    int get_grid_width() const;
+    void set_grid_height(int p_height);
+    int get_grid_height() const;
+    void set_cell_size(float p_size);
+    float get_cell_size() const;
+};
+
+#endif // TD_CPP_PATH_FINDER_H
+```
+
+### path_finder.cpp
+
+```cpp
+// cpp/src/path_finder.cpp
+#include "path_finder.h"
+
+#include <godot_cpp/variant/utility_functions.hpp>
+
+PathFinder::PathFinder() {
+    astar_grid = memnew(AStarGrid2D);
+}
+
+PathFinder::~PathFinder() {
+    if (astar_grid) {
+        memdelete(astar_grid);
+    }
+}
+
+void PathFinder::_bind_methods() {
+    // Привязываем методы для вызова из GDScript
+    ClassDB::bind_method(D_METHOD("setup", "width", "height", "cell_size"),
+        &PathFinder::setup);
+    ClassDB::bind_method(D_METHOD("block_cell", "cell"),
+        &PathFinder::block_cell);
+    ClassDB::bind_method(D_METHOD("unblock_cell", "cell"),
+        &PathFinder::unblock_cell);
+    ClassDB::bind_method(D_METHOD("find_path", "start", "end"),
+        &PathFinder::find_path);
+    ClassDB::bind_method(D_METHOD("get_path_cost", "start", "end"),
+        &PathFinder::get_path_cost);
+    ClassDB::bind_method(D_METHOD("is_cell_blocked", "cell"),
+        &PathFinder::is_cell_blocked);
+
+    // Экспорт свойств
+    ClassDB::bind_method(D_METHOD("set_grid_width", "width"),
+        &PathFinder::set_grid_width);
+    ClassDB::bind_method(D_METHOD("get_grid_width"),
+        &PathFinder::get_grid_width);
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "grid_width"),
+        "set_grid_width", "get_grid_width");
+
+    ClassDB::bind_method(D_METHOD("set_grid_height", "height"),
+        &PathFinder::set_grid_height);
+    ClassDB::bind_method(D_METHOD("get_grid_height"),
+        &PathFinder::get_grid_height);
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "grid_height"),
+        "set_grid_height", "get_grid_height");
+
+    ClassDB::bind_method(D_METHOD("set_cell_size", "size"),
+        &PathFinder::set_cell_size);
+    ClassDB::bind_method(D_METHOD("get_cell_size"),
+        &PathFinder::get_cell_size);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cell_size"),
+        "set_cell_size", "get_cell_size");
+}
+
+void PathFinder::_ready() {
+    setup(grid_width, grid_height, cell_size);
+}
+
+void PathFinder::setup(int p_width, int p_height, float p_cell_size) {
+    grid_width = p_width;
+    grid_height = p_height;
+    cell_size = p_cell_size;
+
+    if (astar_grid) {
+        // Настраиваем размеры сетки
+        astar_grid->set_size(Vector2i(grid_width, grid_height));
+        astar_grid->set_cell_size(Size2(cell_size, cell_size));
+        astar_grid->set_offset(Vector2(cell_size / 2.0f, cell_size / 2.0f));
+        // Диагональное движение отключено для Tower Defense
+        astar_grid->set_diagonal_mode(AStarGrid2D::DIAGONAL_MODE_NEVER);
+        // Запекаем сетку для использования
+        astar_grid->update();
+    }
+
+    UtilityFunctions::print("PathFinder: сетка инициализирована (",
+        grid_width, "x", grid_height, ", ячейка: ", cell_size, ")");
+}
+
+void PathFinder::block_cell(const Vector2i &p_cell) {
+    if (astar_grid && astar_grid->is_in_bounds(p_cell)) {
+        astar_grid->set_point_solid(p_cell, true);
+        blocked_cells.append(p_cell);
+    }
+}
+
+void PathFinder::unblock_cell(const Vector2i &p_cell) {
+    if (astar_grid && astar_grid->is_in_bounds(p_cell)) {
+        astar_grid->set_point_solid(p_cell, false);
+        // Удаляем из списка заблокированных
+        int idx = blocked_cells.find(p_cell);
+        if (idx >= 0) {
+            blocked_cells.remove_at(idx);
+        }
+    }
+}
+
+TypedArray<Vector2> PathFinder::find_path(const Vector2 &p_start,
+        const Vector2 &p_end) {
+    TypedArray<Vector2> result;
+
+    if (!astar_grid) {
+        UtilityFunctions::push_warning("PathFinder: сетка не инициализирована!");
+        return result;
+    }
+
+    // Конвертируем мировые координаты в координаты сетки
+    Vector2i start_cell = Vector2i(
+        (int)(p_start.x / cell_size),
+        (int)(p_start.y / cell_size)
+    );
+    Vector2i end_cell = Vector2i(
+        (int)(p_end.x / cell_size),
+        (int)(p_end.y / cell_size)
+    );
+
+    // Проверяем границы
+    if (!astar_grid->is_in_bounds(start_cell) ||
+        !astar_grid->is_in_bounds(end_cell)) {
+        return result;
+    }
+
+    // Вычисляем путь через A*
+    TypedArray<Vector2i> path = astar_grid->get_id_path(start_cell, end_cell);
+
+    // Конвертируем координаты сетки обратно в мировые
+    for (int i = 0; i < path.size(); i++) {
+        Vector2i cell = path[i];
+        Vector2 world_pos = Vector2(
+            cell.x * cell_size + cell_size / 2.0f,
+            cell.y * cell_size + cell_size / 2.0f
+        );
+        result.append(world_pos);
+    }
+
+    return result;
+}
+
+float PathFinder::get_path_cost(const Vector2 &p_start,
+        const Vector2 &p_end) {
+    if (!astar_grid) return 0.0f;
+
+    Vector2i start_cell = Vector2i(
+        (int)(p_start.x / cell_size),
+        (int)(p_start.y / cell_size)
+    );
+    Vector2i end_cell = Vector2i(
+        (int)(p_end.x / cell_size),
+        (int)(p_end.y / cell_size)
+    );
+
+    if (!astar_grid->is_in_bounds(start_cell) ||
+        !astar_grid->is_in_bounds(end_cell)) {
+        return -1.0f;
+    }
+
+    return astar_grid->get_point_weight_scale(start_cell) +
+           (float)astar_grid->get_id_path(start_cell, end_cell).size();
+}
+
+bool PathFinder::is_cell_blocked(const Vector2i &p_cell) const {
+    if (!astar_grid) return false;
+    return astar_grid->is_point_solid(p_cell);
+}
+
+void PathFinder::set_grid_width(int p_width) {
+    grid_width = p_width;
+}
+int PathFinder::get_grid_width() const { return grid_width; }
+
+void PathFinder::set_grid_height(int p_height) {
+    grid_height = p_height;
+}
+int PathFinder::get_grid_height() const { return grid_height; }
+
+void PathFinder::set_cell_size(float p_size) {
+    cell_size = p_size;
+}
+float PathFinder::get_cell_size() const { return cell_size; }
+```
+
+## 4.8 ProjectileSimulator — пакетная обработка
+
+ProjectileSimulator обрабатывает движение всех снарядов за один вызов вместо индивидуальных `_physics_process()` на каждом снаряде. Это уменьшает количество вызовов движка и повышает производительность при большом количестве одновременных снарядов.
+
+### projectile_sim.h
+
+```cpp
+// cpp/src/projectile_sim.h
+#ifndef TD_CPP_PROJECTILE_SIM_H
+#define TD_CPP_PROJECTILE_SIM_H
+
+#include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/variant/vector2.hpp>
+#include <vector>
+
+using namespace godot;
+
+// Структура данных снаряда для пакетной обработки
+struct ProjectileData {
+    Vector2 position;       // Текущая позиция
+    Vector2 velocity;       // Вектор скорости
+    float lifetime;         // Оставшееся время жизни
+    float damage;           // Урон при попадании
+    float splash_radius;    // Радиус взрыва (0 = одиночная цель)
+    float slow_factor;      // Замедление (1.0 = нет)
+    float slow_duration;    // Длительность замедления
+    int target_id;          // ID цели (ObjectID)
+    bool is_active;         // Активен ли снаряд
+};
+
+class ProjectileSimulator : public Node {
+    GDCLASS(ProjectileSimulator, Node);
+
+private:
+    // Пул снарядов для пакетной обработки
+    std::vector<ProjectileData> projectiles;
+    int max_projectiles = 500;
+    // Кэш результатов для GDScript
+    TypedArray<Dictionary> update_results;
+
+protected:
+    static void _bind_methods();
+
+public:
+    ProjectileSimulator();
+    ~ProjectileSimulator();
+
+    // Добавить снаряд в пул
+    int add_projectile(const Vector2 &p_pos, const Vector2 &p_vel,
+        float p_lifetime, float p_damage, float p_splash,
+        float p_slow_factor, float p_slow_duration, int p_target_id);
+    // Обновить все снаряды (вызывать из _physics_process)
+    TypedArray<Dictionary> update(float p_delta);
+    // Деактивировать снаряд
+    void remove_projectile(int p_index);
+    // Очистить все снаряды
+    void clear_all();
+    // Количество активных снарядов
+    int get_active_count() const;
+};
+
+#endif // TD_CPP_PROJECTILE_SIM_H
+```
+
+### projectile_sim.cpp
+
+```cpp
+// cpp/src/projectile_sim.cpp
+#include "projectile_sim.h"
+
+#include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
+
+ProjectileSimulator::ProjectileSimulator() {
+    // Предварительно выделяем память для пула
+    projectiles.reserve(max_projectiles);
+}
+
+ProjectileSimulator::~ProjectileSimulator() {
+    projectiles.clear();
+}
+
+void ProjectileSimulator::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("add_projectile", "pos", "vel",
+        "lifetime", "damage", "splash", "slow_factor",
+        "slow_duration", "target_id"),
+        &ProjectileSimulator::add_projectile);
+    ClassDB::bind_method(D_METHOD("update", "delta"),
+        &ProjectileSimulator::update);
+    ClassDB::bind_method(D_METHOD("remove_projectile", "index"),
+        &ProjectileSimulator::remove_projectile);
+    ClassDB::bind_method(D_METHOD("clear_all"),
+        &ProjectileSimulator::clear_all);
+    ClassDB::bind_method(D_METHOD("get_active_count"),
+        &ProjectileSimulator::get_active_count);
+
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "max_projectiles"),
+        "set_max_projectiles", "get_max_projectiles");
+}
+
+int ProjectileSimulator::add_projectile(const Vector2 &p_pos,
+        const Vector2 &p_vel, float p_lifetime, float p_damage,
+        float p_splash, float p_slow_factor, float p_slow_duration,
+        int p_target_id) {
+
+    ProjectileData proj;
+    proj.position = p_pos;
+    proj.velocity = p_vel;
+    proj.lifetime = p_lifetime;
+    proj.damage = p_damage;
+    proj.splash_radius = p_splash;
+    proj.slow_factor = p_slow_factor;
+    proj.slow_duration = p_slow_duration;
+    proj.target_id = p_target_id;
+    proj.is_active = true;
+
+    // Ищем свободный слот в пуле
+    for (size_t i = 0; i < projectiles.size(); i++) {
+        if (!projectiles[i].is_active) {
+            projectiles[i] = proj;
+            return (int)i;
+        }
+    }
+
+    // Свободных слотов нет — добавляем в конец
+    if ((int)projectiles.size() < max_projectiles) {
+        projectiles.push_back(proj);
+        return (int)projectiles.size() - 1;
+    }
+
+    // Пул переполнен
+    UtilityFunctions::push_warning("ProjectileSimulator: пул переполнен!");
+    return -1;
+}
+
+TypedArray<Dictionary> ProjectileSimulator::update(float p_delta) {
+    update_results.clear();
+
+    for (size_t i = 0; i < projectiles.size(); i++) {
+        ProjectileData &proj = projectiles[i];
+        if (!proj.is_active) continue;
+
+        // Обновляем позицию
+        proj.position += proj.velocity * p_delta;
+        // Уменьшаем время жизни
+        proj.lifetime -= p_delta;
+
+        // Проверяем, истекло ли время жизни
+        if (proj.lifetime <= 0.0f) {
+            proj.is_active = false;
+            Dictionary result;
+            result["index"] = (int)i;
+            result["event"] = "expired";
+            update_results.append(result);
+            continue;
+        }
+
+        // Формируем результат для GDScript
+        Dictionary result;
+        result["index"] = (int)i;
+        result["position"] = proj.position;
+        result["is_active"] = proj.is_active;
+        update_results.append(result);
+    }
+
+    return update_results;
+}
+
+void ProjectileSimulator::remove_projectile(int p_index) {
+    if (p_index >= 0 && p_index < (int)projectiles.size()) {
+        projectiles[p_index].is_active = false;
+    }
+}
+
+void ProjectileSimulator::clear_all() {
+    projectiles.clear();
+}
+
+int ProjectileSimulator::get_active_count() const {
+    int count = 0;
+    for (const auto &proj : projectiles) {
+        if (proj.is_active) count++;
+    }
+    return count;
+}
+```
+
+## 4.9 Сборка и тестирование
+
+После написания кода соберите расширение и проверьте его в Godot:
+
+```bash
+# Сборка (из папки cpp/)
+scons platform=linuxbsd -j4
+
+# При успешной сборке появится файл:
+# cpp/bin/libtd_cpp.linux.debug.x86_64.so
+```
+
+Запустите Godot и проверьте, что расширение загрузилось. В Output должно появиться:
+
+```
+PathFinder: сетка инициализирована (40x23, ячейка: 32)
+```
+
+Тест в GDScript:
+
+```gdscript
+# Тестовый скрипт — добавьте на любой узел и запустите
+extends Node2D
+
+func _ready() -> void:
+    # Создаём PathFinder
+    var finder = PathFinder.new()
+    finder.setup(40, 23, 32.0)
+
+    # Ищем путь от верхнего левого угла до нижнего правого
+    var path = finder.find_path(Vector2(100, 60), Vector2(1100, 660))
+    print("Найден путь из %d точек" % path.size())
+    for point in path:
+        print("  → ", point)
+
+    # Тестируем ProjectileSimulator
+    var sim = ProjectileSimulator.new()
+    var idx = sim.add_projectile(
+        Vector2(100, 100),  # позиция
+        Vector2(300, 0),    # скорость (направо)
+        5.0,                # время жизни
+        15.0,               # урон
+        0.0,                # без splash
+        1.0,                # без замедления
+        0.0,                # без длительности замедления
+        0                   # target_id
+    )
+    print("Снаряд добавлен, индекс: %d" % idx)
+
+    # Обновляем на один кадр
+    var results = sim.update(1.0 / 60.0)
+    print("Результат обновления: %s" % results)
+```
+
+<Callout type="danger" title="Типичные ошибки GDScript-разработчиков при работе с C++">
+1. **Забыли `GDCLASS`** — макрос `GDCLASS(ClassName, ParentClass)` обязателен для каждого класса, который должен быть виден в Godot. Без него класс существует в C++, но не доступен в GDScript.
+2. **Утечки памяти** — C++ не имеет сборщика мусора! Каждый `memnew()` должен париться с `memdelete()`. Используйте `memnew`/`memdelete` вместо `new`/`delete`.
+3. **Неправильные типы параметров** — `D_METHOD("method", "param_name")` требует точного совпадения сигнатур. Если метод принимает `float`, а вы передаёте `int` из GDScript — может быть ошибка приведения.
+4. **Отсутствие `_bind_methods()`** — методы не появятся в GDScript, пока вы не привяжете их через `ClassDB::bind_method()`.
+</Callout>
+
+<Insight title="Граница GDScript ↔ C++: когда какой язык?">
+Разделение ответственности между GDScript и C++ — ключ к архитектуре проекта. **GDScript** — для игровой логики, UI, состояний, менеджеров, работы с деревом сцен. **C++** — для математики, алгоритмов, обработки массивов данных, физики. Если функция вызывается реже 10 раз за кадр — GDScript. Если 100+ раз за кадр с вычислениями — C++. PathFinder и ProjectileSimulator — идеальные кандидаты для C++, потому что они обрабатывают десятки объектов каждый кадр с нетривиальной математикой.
+</Insight>
+
+<Challenge title="Hello GDExtension" difficulty="easy" xp={10}>
+Создайте простой C++ класс `Greeter` с методом `greet(name: String) -> String`, который возвращает строку `"Привет, {name}! Добро пожаловать в Tower Defense на C++!"`. Зарегистрируйте класс в GDExtension, соберите библиотеку и вызовите метод из GDScript: `var g = Greeter.new(); print(g.greet("Игрок"))`. Убедитесь, что выводится корректная строка.
+</Challenge>

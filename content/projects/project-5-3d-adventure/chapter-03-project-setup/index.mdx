@@ -1,0 +1,393 @@
+---
+title: "Глава 3: Настройка 3D-проекта"
+project: "project-5-3d-adventure"
+chapter: "chapter-03-project-setup"
+order: 3
+xp: 10
+estimatedTime: 30
+tags: []
+---
+
+## 3.1 Цели главы
+
+<GoalsList>
+1. **Создать 3D-проект** в Godot 4.x с рендерером Forward+
+2. **Настроить физические слои** для 3D-коллизий (6 слоёв)
+3. **Определить Input Map** для управления в 3D-приключении
+4. **Создать структуру директорий** проекта с папкой cpp/ для GDExtension
+5. **Настроить C++ GDExtension** — .gdextension, SCons, register_types
+6. **Зарегистрировать Autoload** менеджеры
+7. **Создать первую 3D-сцену** с Camera3D, DirectionalLight3D, WorldEnvironment
+</GoalsList>
+
+## 3.2 Создание 3D-проекта
+
+Проект 3D-приключения требует рендерера Forward+ — это единственный рендерер Godot 4.x, полностью поддерживающий все 3D-функции: динамическое освещение, тени, GI (Global Illumination), отражения и пост-процессинг. Рендерер Compatibility не поддерживает многие из этих функций и предназначен для мобильных устройств и веб-экспорта.
+
+При создании проекта выберите **Forward+** в поле Renderer:
+
+```
+┌─────────────────────────────────────────────┐
+│  Создание проекта                            │
+│                                              │
+│  Имя проекта: 3d-adventure                  │
+│  Путь: ~/projects/3d-adventure              │
+│  Рендерер:    [Forward+]  ◀── ОБЯЗАТЕЛЬНО   │
+│                                              │
+│  □ Compatibility (НЕ подходит для 3D)       │
+│  □ Mobile (для мобильного экспорта)         │
+└─────────────────────────────────────────────┘
+```
+
+<Callout type="warning" title="Forward+ vs Compatibility">
+Рендерер **Forward+** обязателен для этого проекта. Compatibility не поддерживает: VoxelGI, SDFGI, ReflectionProbe, GPUParticles3D с attractor, декали, Shadow Atlas выше 1024×1024. Если вы случайно выбрали Compatibility, измените рендерер в Project Settings → Rendering → Renderer → Rendering Method на `forward_plus`.
+</Callout>
+
+<Insight title="Почему C++ — основной язык с самого начала">
+В 3D-приключении критические подсистемы работают каждый кадр: контроллер персонажа, камера, NPC AI (10–20 агентов), навигация. GDScript не справится с нагрузкой 20 NPC, обновляющих путь каждый кадр. Поэтому C++ используется как основной язык с первой строчки кода, а GDScript — для данных (Resources), UI и менеджеров, не требующих высокой производительности. Это разделение фиксируется в структуре проекта: `cpp/` для C++ логики, `scripts/` для GDScript.
+</Insight>
+
+## 3.3 Физические слои (3D)
+
+В 3D-игре физические слои управляют тем, какие объекты взаимодействуют друг с другом. Мы определяем 6 слоёв для чёткого разделения систем. Каждый слой — битовая маска, что позволяет объекту находиться на нескольких слоях одновременно.
+
+| Слой | Название | Описание | Используют |
+|---|---|---|---|
+| 1 | `player` | Тело игрока | AdventureCharacter |
+| 2 | `terrain` | Статическая геометрия, пол, стены | StaticBody3D, CSG-фигуры |
+| 3 | `enemies` | Тела врагов | NPCController (враждебные) |
+| 4 | `projectiles` | Снаряды, стрелы, магия | Area3D-снаряды |
+| 5 | `items` | Подбираемые предметы | Area3D-предметы |
+| 6 | `triggers` | Зоны активации (квесты, переходы) | Area3D-триггеры |
+
+Настройте слои в **Project Settings → Layer Names → 3D Physics**:
+
+```
+Layer 1: player
+Layer 2: terrain
+Layer 3: enemies
+Layer 4: projectiles
+Layer 5: items
+Layer 6: triggers
+```
+
+Пример маски коллизий для игрока:
+
+```
+collision_layer = 1  (слой player)
+collision_mask  = 2  (проверяет столкновение с terrain)
+```
+
+Для Hitbox игрока:
+
+```
+collision_layer = 4  (слой projectiles — Hitbox «стреляет» уроном)
+collision_mask  = 8  (проверяет Hurtbox врагов на слое enemies)
+```
+
+## 3.4 Input Map
+
+Управление в 3D-приключении сложнее, чем в 2D-платформере: добавляются камера, уклонение, блок, инвентарь и взаимодействие. Все действия привязаны к действиям Input Map.
+
+Настройте в **Project Settings → Input Map**:
+
+| Действие | Клавиша (клавиатура) | Геймпад |
+|---|---|---|
+| `move_forward` | W | Left Stick Up |
+| `move_back` | S | Left Stick Down |
+| `move_left` | A | Left Stick Left |
+| `move_right` | D | Left Stick Right |
+| `look_up` | — (мышь) | Right Stick Up |
+| `look_down` | — (мышь) | Right Stick Down |
+| `look_left` | — (мышь) | Right Stick Left |
+| `look_right` | — (мышь) | Right Stick Right |
+| `jump` | Space | A |
+| `attack` | ЛКМ | X |
+| `dodge` | Shift | B |
+| `block` | Q | LB |
+| `interact` | E | Y |
+| `inventory` | Tab | Start |
+| `pause` | Escape | Select |
+
+Для камеры используйте `Input.get_vector()` с `look_left`/`look_right`/`look_up`/`look_down` — это автоматически нормализует ввод и работает с геймпадом.
+
+## 3.5 Структура директорий
+
+Проект следует соглашению: C++ код в `cpp/`, GDScript в `scripts/`, данные в `resources/`, сцены в `scenes/`, ассеты в `assets/`.
+
+```
+3d-adventure/
+├── cpp/                          # C++ GDExtension исходники
+│   ├── src/
+│   │   ├── adventure_character.h
+│   │   ├── adventure_character.cpp
+│   │   ├── camera_controller.h
+│   │   ├── camera_controller.cpp
+│   │   ├── combat_controller.h
+│   │   ├── combat_controller.cpp
+│   │   ├── npc_controller.h
+│   │   ├── npc_controller.cpp
+│   │   ├── inventory_system.h
+│   │   ├── inventory_system.cpp
+│   │   ├── quest_system.h
+│   │   ├── quest_system.cpp
+│   │   ├── day_night_cycle.h
+│   │   └── day_night_cycle.cpp
+│   ├── register_types.h
+│   ├── register_types.cpp
+│   └── SConstruct
+├── scripts/                      # GDScript менеджеры
+│   ├── game_manager.gd
+│   ├── economy_manager.gd
+│   ├── audio_manager.gd
+│   ├── dialogue_manager.gd
+│   └── save_manager.gd
+├── scenes/                       # Godot-сцены
+│   ├── player/
+│   │   └── player.tscn
+│   ├── enemies/
+│   │   └── goblin.tscn
+│   ├── npc/
+│   │   └── elder.tscn
+│   ├── zones/
+│   │   ├── village.tscn
+│   │   ├── forest.tscn
+│   │   ├── ruins.tscn
+│   │   ├── catacombs.tscn
+│   │   └── dark_tower.tscn
+│   └── ui/
+│       ├── hud.tscn
+│       ├── dialogue_box.tscn
+│       └── inventory_ui.tscn
+├── resources/                    # GDScript Resources (данные)
+│   ├── items/
+│   ├── quests/
+│   ├── dialogues/
+│   ├── enemies/
+│   └── npcs/
+├── assets/                       # Ассеты (модели, текстуры, звуки)
+│   ├── models/
+│   ├── textures/
+│   ├── audio/
+│   └── fonts/
+├── addons/
+│   └── gdextension/              # Скомпилированная библиотека
+└── project.godot
+```
+
+## 3.6 C++ GDExtension setup
+
+GDExtension позволяет писать C++ код, который компилируется в динамическую библиотеку и загружается Godot без пересборки движка. Это стандартный подход для высокопроизводительных подсистем в Godot 4.x.
+
+### Файл .gdextension
+
+Создайте файл `addons/gdextension/adventure.gdextension`:
+
+```ini
+[configuration]
+
+entry_symbol = "gdextension_init"
+compatibility_minimum = 4.2
+reloadable = true
+
+[libraries]
+
+windows.debug.x86_64 = "res://addons/gdextension/bin/windows/adventure.windows.debug.x86_64.dll"
+windows.release.x86_64 = "res://addons/gdextension/bin/windows/adventure.windows.release.x86_64.dll"
+linux.debug.x86_64 = "res://addons/gdextension/bin/linux/adventure.linux.debug.x86_64.so"
+linux.release.x86_64 = "res://addons/gdextension/bin/linux/adventure.linux.release.x86_64.so"
+macos.debug = "res://addons/gdextension/bin/macos/adventure.macos.debug.framework"
+macos.release = "res://addons/gdextension/bin/macos/adventure.macos.release.framework"
+```
+
+`reloadable = true` позволяет перезагружать расширение без перезапуска редактора — критично для итеративной разработки.
+
+### SConstruct (сборка)
+
+Создайте файл `cpp/SConstruct`:
+
+```python
+#!/usr/bin/env python
+import os, sys
+
+# Путь к godot-cpp (клонируйте в проект)
+godot_cpp_path = os.path.join(os.getcwd(), "..", "godot-cpp")
+
+env = SConscript(godot_cpp_path + "/SConstruct")
+
+env.Append(CPPPATH=["src/"])
+env["CXXFLAGS"] = ["-std=c++17", "-O2"]
+
+sources = Glob("src/*.cpp")
+
+if env["target"] == "debug":
+    env.Append(CXXFLAGS=["-g", "-DDEBUG"])
+
+library = env.StaticLibrary(
+    f"../addons/gdextension/bin/{env['platform']}/adventure.{env['platform']}.{env['target']}.x86_64",
+    sources,
+)
+
+Default(library)
+```
+
+### register_types.h / register_types.cpp
+
+Эти файлы регистрируют C++ классы в Godot:
+
+```cpp
+// cpp/register_types.h
+#pragma once
+#include <godot_cpp/core/class_db.hpp>
+
+using namespace godot;
+
+void initialize_adventure_module(ModuleInitializationLevel p_level);
+void uninitialize_adventure_module(ModuleInitializationLevel p_level);
+```
+
+```cpp
+// cpp/register_types.cpp
+#include "register_types.h"
+#include "src/adventure_character.h"
+#include "src/camera_controller.h"
+#include "src/combat_controller.h"
+#include "src/npc_controller.h"
+#include "src/inventory_system.h"
+#include "src/quest_system.h"
+#include "src/day_night_cycle.h"
+
+#include <godot_cpp/core/defs.hpp>
+#include <godot_cpp/godot.hpp>
+
+using namespace godot;
+using namespace adv;
+
+void initialize_adventure_module(ModuleInitializationLevel p_level) {
+    if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) return;
+
+    ClassDB::register_class<AdventureCharacter>();
+    ClassDB::register_class<CameraController>();
+    ClassDB::register_class<CombatController>();
+    ClassDB::register_class<NPCController>();
+    ClassDB::register_class<InventorySystem>();
+    ClassDB::register_class<QuestSystem>();
+    ClassDB::register_class<DayNightCycle>();
+}
+
+void uninitialize_adventure_module(ModuleInitializationLevel p_level) {
+    if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) return;
+}
+
+extern "C" {
+    GDExtensionBool GDE_EXPORT gdextension_init(
+        GDExtensionInterface *p_interface,
+        const GDExtensionClassLibraryPtr p_library,
+        GDExtensionInitialization *r_initialization
+    ) {
+        GDExtensionBinding::InitObject init_obj(p_interface, p_library, r_initialization);
+        init_obj.register_initializer(initialize_adventure_module);
+        init_obj.register_terminator(uninitialize_adventure_module);
+        init_obj.set_minimum_library_initialization_level(MODULE_INITIALIZATION_LEVEL_SCENE);
+        return init_obj.init();
+    }
+}
+```
+
+Сборка: `cd cpp && scons` — скомпилирует библиотеку и поместит в `addons/gdextension/bin/`.
+
+## 3.7 Autoload регистрация
+
+Autoload-менеджеры — глобальные синглтоны, доступные из любого скрипта. Они реализуются на GDScript, так как не являются критическим путём производительности.
+
+Зарегистрируйте в **Project Settings → Autoload**:
+
+| Имя | Путь | Описание |
+|---|---|---|
+| `GameManager` | `res://scripts/game_manager.gd` | Пауза, состояние игры, ссылка на игрока |
+| `EconomyManager` | `res://scripts/economy_manager.gd` | Золото, покупки, продажи |
+| `AudioManager` | `res://scripts/audio_manager.gd` | BGM, SFX пул, кроссфейд |
+| `DialogueManager` | `res://scripts/dialogue_manager.gd` | Запуск диалогов, выбор веток |
+| `SaveManager` | `res://scripts/save_manager.gd` | Сохранение/загрузка, слоты |
+
+<Callout type="tip" title="Порядок загрузки Autoload">
+Godot загружает Autoload в порядке регистрации. GameManager должен быть первым — другие менеджеры могут обращаться к `GameManager.player`. Если порядок нарушен, получите `null` при обращении к игроку из EconomyManager в `_ready()`.
+</Callout>
+
+## 3.8 Первая 3D-сцена
+
+Создайте тестовую сцену для проверки настроек: `scenes/test_3d.tscn`. Эта сцена содержит минимальный набор узлов для 3D-визуализации.
+
+### Дерево сцены
+
+```
+Node3D (корень)
+├── DirectionalLight3D        # Направленный свет (солнце)
+│   └── Shadow settings: enabled, 4096 atlas
+├── WorldEnvironment          # Окружение: небо, туман, тонирование
+│   └── Environment resource
+├── Camera3D                  # Камера для предпросмотра
+│   └── Position: (0, 5, 10)
+└── CSGBox3D                  # Тестовый пол
+    └── Size: (20, 0.5, 20), Position: (0, -0.25, 0)
+```
+
+### Настройка WorldEnvironment
+
+Создайте ресурс Environment и настройте:
+
+```gdscript
+# Быстрая настройка Environment через код (для понимания параметров)
+# В реальном проекте — настраивайте через инспектор
+var environment = Environment.new()
+environment.background_mode = Environment.BG_SKY
+environment.sky = Sky.new()
+
+# Туман для атмосферы
+environment.fog_enabled = true
+environment.fog_light_color = Color(0.8, 0.85, 0.9)
+environment.fog_depth_begin = 20.0
+environment.fog_depth_end = 80.0
+
+# Тонирование
+environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+environment.tonemap_exposure = 1.0
+```
+
+### Настройка DirectionalLight3D
+
+Направленный свет имитирует солнце. Для 3D-приключения обязательны тени:
+
+```gdscript
+# DirectionalLight3D настройки
+light_color = Color(1.0, 0.95, 0.85)  # Тёплый солнечный свет
+light_energy = 1.0
+shadow_enabled = true
+directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
+directional_shadow_max_distance = 50.0
+```
+
+<Callout type="info" title="CSG для прототипирования">
+CSG-фигуры (Constructive Solid Geometry) идеальны для быстрого прототипирования 3D-уровней. CSGBox3D, CSGCylinder3D, CSGSphere3D позволяют создавать геометрию прямо в редакторе без 3D-моделей. Когда уровень готов, замените CSG на импортированные модели — NavMesh будет запекаться по любой геометрии.
+</Callout>
+
+## 3.9 Проверка настроек
+
+Запустите сцену (F6). Вы должны увидеть:
+- Пол (CSGBox3D) с тенями
+- Небо через WorldEnvironment
+- Камеру, смотрящую на сцену
+
+Если экран чёрный:
+1. Проверьте, что Camera3D активна (кликните на неё → `Current` в инспекторе)
+2. Убедитесь, что рендерер Forward+: Project Settings → Rendering → Renderer → Rendering Method
+
+Если тени отсутствуют:
+1. Включите `shadow_enabled` на DirectionalLight3D
+2. Увеличьте `directional_shadow_max_distance`
+
+## 3.10 Вызов
+
+<Challenge title="3D-проект" difficulty="easy" xp={10}>
+Создайте 3D-проект Godot 4.x с рендерером Forward+. Настройте 6 физических слоёв (player, terrain, enemies, projectiles, items, triggers), добавьте действия Input Map (move, look, jump, attack, dodge, block, interact, inventory, pause) и создайте тестовую сцену с DirectionalLight3D, WorldEnvironment и Camera3D. Убедитесь, что тени работают и небо отображается.
+</Challenge>

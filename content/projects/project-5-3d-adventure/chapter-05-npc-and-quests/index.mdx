@@ -1,0 +1,1146 @@
+---
+title: "Глава 5: NPC и квесты"
+project: "project-5-3d-adventure"
+chapter: "chapter-05-npc-and-quests"
+order: 5
+xp: 15
+estimatedTime: 50
+tags: []
+---
+
+## 5.1 Цели главы
+
+<GoalsList>
+1. **Data Resources** — ItemData, QuestData, QuestObjective, DialogueData, DialogueLine, DialogueChoice, EnemyData, NPCData на GDScript
+2. **InventorySystem** — C++ с std::unordered_map, O(1) доступ, слоты экипировки
+3. **QuestSystem** — event_index для O(1) триггеров квестов, 5 основных + 8 побочных
+4. **DialogueSystem** — ветки выбора, условия, on_complete обратные вызовы
+5. **DayNightCycle** — 600-секундный полный цикл, влияние на врагов и NPC
+6. **GDScript менеджеры** — GameManager, EconomyManager, AudioManager
+</GoalsList>
+
+## 5.2 Data Layer — ресурсы данных
+
+Все данные определены как GDScript Resources с `@export` переменными. Это позволяет настраивать параметры в инспекторе Godot без изменения кода — дизайнер создаёт `.tres` файлы, а C++ классы читают их через GDExtension API.
+
+### resources/item_data.gd
+
+```gdscript
+class_name ItemData
+extends Resource
+
+## Уникальный идентификатор предмета
+@export var item_id: StringName
+## Отображаемое название
+@export var display_name: String = "Неизвестный предмет"
+## Описание для инвентаря
+@export var description: String = ""
+## Иконка в инвентаре
+@export var icon: Texture2D
+## Тип: consumable, equipment, quest_item, material
+@export var item_type: StringName = &"consumable"
+## Максимальный размер стека (для расходуемых и материалов)
+@export var max_stack: int = 99
+## Цена продажи
+@export var sell_price: int = 0
+## 3D-модель в игровом мире
+@export var world_scene: PackedScene
+## Эффекты при использовании [{"type": "heal", "value": 30}]
+@export var effects: Array[Dictionary] = []
+## Слот экипировки: weapon, armor, accessory (пусто для неэкипируемых)
+@export var equipment_slot: StringName = &""
+## Бонусы характеристик при экипировке {"attack": 10, "defense": 5}
+@export var stat_bonuses: Dictionary = {}
+```
+
+Четыре типа предметов определяют поведение в инвентаре:
+
+| Тип | Стекуется | Выбрасывается | Примеры |
+|---|---|---|---|
+| `consumable` | Да (до max_stack) | Да | Зелье лечения, Зелье силы |
+| `equipment` | Нет | Да | Меч, Доспех, Кольцо |
+| `quest_item` | Нет | **Нет** | Ключ стража, Амулет |
+| `material` | Да (до 99) | Да | Железная руда, Травы |
+
+### resources/quest_data.gd
+
+```gdscript
+class_name QuestData
+extends Resource
+
+## Уникальный идентификатор квеста
+@export var quest_id: StringName
+## Название квеста
+@export var title: String = ""
+## Описание для журнала
+@export var description: String = ""
+## Этапы квеста
+@export var objectives: Array[QuestObjective] = []
+## Награды {"gold": 100, "item": &"sword_01"}
+@export var rewards: Dictionary = {}
+## ID квестов, которые нужно завершить перед этим
+@export var prerequisites: Array[StringName] = []
+## Можно ли перепройти при провале
+@export var can_retry: bool = false
+```
+
+### resources/quest_objective.gd
+
+```gdscript
+class_name QuestObjective
+extends Resource
+
+## Тип: kill, collect, talk, reach
+@export var type: StringName = &"kill"
+## ID цели (врага, предмета, NPC, области)
+@export var target: StringName
+## Необходимое количество
+@export var required: int = 1
+## Описание этапа для HUD
+@export var description: String = ""
+```
+
+<Callout type="info" title="Квестовая машина состояний">
+Квесты проходят 4 состояния: `not_started` → `in_progress` → `completed` / `failed`. Текущий прогресс (`current` для каждого objective) — это runtime-данные, которые **не** хранятся в Resource. QuestSystem отслеживает прогресс через структуру `QuestProgress` в C++. Переход `failed → in_progress` возможен только если `can_retry = true`.
+</Callout>
+
+### resources/dialogue_data.gd
+
+```gdscript
+class_name DialogueData
+extends Resource
+
+## Уникальный идентификатор диалога
+@export var dialogue_id: StringName
+## Массив реплик
+@export var lines: Array[DialogueLine] = []
+```
+
+### resources/dialogue_line.gd
+
+```gdscript
+class_name DialogueLine
+extends Resource
+
+## Имя говорящего
+@export var speaker: String = ""
+## Текст реплики
+@export var text: String = ""
+## Портрет говорящего
+@export var portrait: Texture2D
+## Варианты ответов (пусто = автоматический переход к следующей)
+@export var choices: Array[DialogueChoice] = []
+## Условие видимости (C++ eval): "has_item:&\"forest_key\""
+@export var condition: String = ""
+## Действие после реплики: "start_quest:forest_clear"
+@export var on_complete: String = ""
+```
+
+### resources/dialogue_choice.gd
+
+```gdscript
+class_name DialogueChoice
+extends Resource
+
+## Текст варианта
+@export var text: String = ""
+## Индекс следующей реплики (-1 = завершить диалог)
+@export var next_line_index: int = -1
+## Условие видимости варианта
+@export var condition: String = ""
+## Действие при выборе: "give_item:&\"health_potion\""
+@export var on_select: String = ""
+```
+
+Система диалогов поддерживает ветвление через `choices`, условную видимость через `condition` и побочные эффекты через `on_complete` / `on_select`. Условия проверяются в C++ для скорости: `has_item()` использует O(1) HashMap.
+
+### resources/enemy_data.gd
+
+```gdscript
+class_name EnemyData
+extends Resource
+
+@export var enemy_id: StringName
+@export var display_name: String = ""
+@export var max_health: int = 30
+@export var damage: int = 5
+@export var move_speed: float = 3.0
+@export var detect_range: float = 8.0
+@export var attack_range: float = 1.5
+@export var gold_reward: int = 10
+## Таблица дропа [{"item_id": &"health_potion", "chance": 0.2}]
+@export var loot_table: Array[Dictionary] = []
+## Поведение: aggressive, defensive, ranged
+@export var behavior: StringName = &"aggressive"
+## Множитель HP/урона ночью
+@export var night_multiplier: float = 1.0
+## Сцена врага
+@export var enemy_scene: PackedScene
+```
+
+### resources/npc_data.gd
+
+```gdscript
+class_name NPCData
+extends Resource
+
+@export var npc_id: StringName
+@export var display_name: String = ""
+## Роль: quest_giver, merchant, story
+@export var role: StringName = &"quest_giver"
+## Доступные диалоги
+@export var dialogues: Array[DialogueData] = []
+## Расписание дня/ночи {"day": "market", "night": "home"}
+@export var schedule: Dictionary = {}
+## Товары (только для торговцев)
+@export var shop_items: Array[ItemData] = []
+## Точки патруля
+@export var patrol_points: Array[Vector3] = []
+```
+
+## 5.3 InventorySystem — C++ инвентарь
+
+Инвентарь реализован в C++ для O(1) операций поиска через `std::unordered_map`. Это критично для системы квестов: проверка `has_item()` вызывается при каждой реплике диалога и каждом триггере квеста.
+
+### inventory_system.h
+
+```cpp
+#pragma once
+
+#include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
+#include <unordered_map>
+
+namespace adv {
+
+struct ItemSlot {
+    StringName item_id;
+    int count = 0;
+};
+
+// Хэшер для StringName в std::unordered_map
+struct StringNameHasher {
+    size_t operator()(const StringName &key) const {
+        return key.hash();  // StringName уже имеет быстрый хэш
+    }
+};
+
+// Оператор сравнения для StringName в unordered_map
+struct StringNameEqual {
+    bool operator()(const StringName &a, const StringName &b) const {
+        return a == b;
+    }
+};
+
+class InventorySystem : public Node {
+    GDCLASS(InventorySystem, Node)
+
+private:
+    // O(1) доступ: item_id → количество
+    std::unordered_map<StringName, int, StringNameHasher, StringNameEqual> item_counts;
+    // Слоты для отображения в UI
+    std::vector<ItemSlot> slots;
+    int max_slots = 20;
+
+    // Слоты экипировки
+    StringName equipped_weapon;
+    StringName equipped_armor;
+    StringName equipped_accessory;
+
+    void _emit_inventory_changed();
+
+protected:
+    static void _bind_methods();
+
+public:
+    void _ready() override;
+
+    // Основные операции
+    bool add_item(const StringName &item_id, int count = 1);
+    bool remove_item(const StringName &item_id, int count = 1);
+    bool has_item(const StringName &item_id, int count = 1) const;
+    int get_count(const StringName &item_id) const;
+
+    // Экипировка
+    bool equip_item(const StringName &item_id, const StringName &slot);
+    bool unequip_slot(const StringName &slot);
+    StringName get_equipped(const StringName &slot) const;
+
+    // Комбинация предметов (для крафта)
+    bool combine_items(const StringName &a, const StringName &b);
+
+    // Сериализация
+    Dictionary to_dict() const;
+    void from_dict(const Dictionary &data);
+};
+
+} // namespace adv
+```
+
+### inventory_system.cpp
+
+```cpp
+#include "inventory_system.h"
+#include <godot_cpp/variant/utility_functions.hpp>
+
+namespace adv {
+
+void InventorySystem::_bind_methods() {
+    ADD_SIGNAL(MethodInfo("inventory_changed"));
+    ADD_SIGNAL(MethodInfo("item_equipped", PropertyInfo(Variant::STRING_NAME, "item_id"),
+                          PropertyInfo(Variant::STRING_NAME, "slot")));
+
+    ClassDB::bind_method(D_METHOD("add_item", "item_id", "count"), &InventorySystem::add_item, DEFVAL(1));
+    ClassDB::bind_method(D_METHOD("remove_item", "item_id", "count"), &InventorySystem::remove_item, DEFVAL(1));
+    ClassDB::bind_method(D_METHOD("has_item", "item_id", "count"), &InventorySystem::has_item, DEFVAL(1));
+    ClassDB::bind_method(D_METHOD("get_count", "item_id"), &InventorySystem::get_count);
+    ClassDB::bind_method(D_METHOD("equip_item", "item_id", "slot"), &InventorySystem::equip_item);
+    ClassDB::bind_method(D_METHOD("unequip_slot", "slot"), &InventorySystem::unequip_slot);
+    ClassDB::bind_method(D_METHOD("get_equipped", "slot"), &InventorySystem::get_equipped);
+    ClassDB::bind_method(D_METHOD("combine_items", "a", "b"), &InventorySystem::combine_items);
+    ClassDB::bind_method(D_METHOD("to_dict"), &InventorySystem::to_dict);
+    ClassDB::bind_method(D_METHOD("from_dict", "data"), &InventorySystem::from_dict);
+}
+
+void InventorySystem::_ready() {
+    slots.resize(max_slots);
+}
+
+bool InventorySystem::add_item(const StringName &item_id, int count) {
+    if (count <= 0) return false;
+
+    // Проверяем существующий стек — O(1)
+    auto it = item_counts.find(item_id);
+    if (it != item_counts.end()) {
+        it->second += count;
+        // Обновляем слот
+        for (auto &slot : slots) {
+            if (slot.item_id == item_id) {
+                slot.count = it->second;
+                break;
+            }
+        }
+        _emit_inventory_changed();
+        return true;
+    }
+
+    // Ищем пустой слот
+    for (auto &slot : slots) {
+        if (slot.count == 0) {
+            slot.item_id = item_id;
+            slot.count = count;
+            item_counts[item_id] = count;
+            _emit_inventory_changed();
+            return true;
+        }
+    }
+
+    return false; // Инвентарь полон
+}
+
+bool InventorySystem::remove_item(const StringName &item_id, int count) {
+    auto it = item_counts.find(item_id);
+    if (it == item_counts.end() || it->second < count) return false;
+
+    it->second -= count;
+    if (it->second <= 0) {
+        item_counts.erase(it);
+        for (auto &slot : slots) {
+            if (slot.item_id == item_id) {
+                slot = ItemSlot(); // Очищаем слот
+                break;
+            }
+        }
+    }
+
+    _emit_inventory_changed();
+    return true;
+}
+
+bool InventorySystem::has_item(const StringName &item_id, int count) const {
+    auto it = item_counts.find(item_id);
+    return it != item_counts.end() && it->second >= count;
+}
+
+int InventorySystem::get_count(const StringName &item_id) const {
+    auto it = item_counts.find(item_id);
+    return it != item_counts.end() ? it->second : 0;
+}
+
+bool InventorySystem::equip_item(const StringName &item_id, const StringName &slot) {
+    if (!has_item(item_id)) return false;
+
+    // Снимаем текущий предмет со слота
+    unequip_slot(slot);
+
+    // Экипируем новый
+    if (slot == StringName("weapon")) equipped_weapon = item_id;
+    else if (slot == StringName("armor")) equipped_armor = item_id;
+    else if (slot == StringName("accessory")) equipped_accessory = item_id;
+    else return false;
+
+    // Убираем из инвентаря (экипировка не стекуется)
+    remove_item(item_id, 1);
+    emit_signal("item_equipped", item_id, slot);
+    return true;
+}
+
+bool InventorySystem::unequip_slot(const StringName &slot) {
+    StringName current = get_equipped(slot);
+    if (current == StringName()) return false;
+
+    // Возвращаем в инвентарь
+    add_item(current, 1);
+
+    if (slot == StringName("weapon")) equipped_weapon = StringName();
+    else if (slot == StringName("armor")) equipped_armor = StringName();
+    else if (slot == StringName("accessory")) equipped_accessory = StringName();
+
+    return true;
+}
+
+StringName InventorySystem::get_equipped(const StringName &slot) const {
+    if (slot == StringName("weapon")) return equipped_weapon;
+    if (slot == StringName("armor")) return equipped_armor;
+    if (slot == StringName("accessory")) return equipped_accessory;
+    return StringName();
+}
+
+bool InventorySystem::combine_items(const StringName &a, const StringName &b) {
+    // Базовая заглушка — расширите для крафта
+    // Рецепты: healing_herb + water_bottle = health_potion
+    if (has_item(a) && has_item(b)) {
+        remove_item(a, 1);
+        remove_item(b, 1);
+        // Результат определяется рецептом
+        return true;
+    }
+    return false;
+}
+
+Dictionary InventorySystem::to_dict() const {
+    Dictionary result;
+    for (const auto &slot : slots) {
+        if (slot.count > 0) {
+            result[slot.item_id] = slot.count;
+        }
+    }
+    result["weapon"] = equipped_weapon;
+    result["armor"] = equipped_armor;
+    result["accessory"] = equipped_accessory;
+    return result;
+}
+
+void InventorySystem::from_dict(const Dictionary &data) {
+    item_counts.clear();
+    for (auto &slot : slots) slot = ItemSlot();
+
+    const Array keys = data.keys();
+    int slot_idx = 0;
+    for (int i = 0; i < keys.size() && slot_idx < max_slots; ++i) {
+        StringName key = keys[i];
+        if (key == StringName("weapon") || key == StringName("armor")
+            || key == StringName("accessory")) continue;
+        int count = data[key];
+        slots[slot_idx].item_id = key;
+        slots[slot_idx].count = count;
+        item_counts[key] = count;
+        slot_idx++;
+    }
+
+    equipped_weapon = data.get("weapon", StringName());
+    equipped_armor = data.get("armor", StringName());
+    equipped_accessory = data.get("accessory", StringName());
+
+    _emit_inventory_changed();
+}
+
+void InventorySystem::_emit_inventory_changed() {
+    emit_signal("inventory_changed");
+}
+
+} // namespace adv
+```
+
+## 5.4 QuestSystem — C++ квестовая система
+
+Квестовая система использует `event_index` — обратный индекс от типа события к списку квестов. Это позволяет O(1) определить, какие квесты затрагивает событие, вместо перебора всех активных квестов.
+
+<Insight title="Событийная квестовая система vs поллинг">
+Поллинг (опрос каждый кадр: «убит ли 5 гоблинов?») — наивный подход, который масштабируется как O(N) при N активных квестов. Событийная система: при убийстве гоблина вызывается `on_event("kill", "goblin", 1)`, и event_index мгновенно находит все квесты с objective `kill:goblin` — O(1). При 20+ квестах разница в производительности критична, особенно когда C++ контроллер вызывает систему каждый кадр.
+</Insight>
+
+### quest_system.h
+
+```cpp
+#pragma once
+
+#include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
+#include <unordered_map>
+
+namespace adv {
+
+enum class QuestState { NOT_STARTED, IN_PROGRESS, COMPLETED, FAILED };
+
+struct QuestProgress {
+    StringName quest_id;
+    QuestState state = QuestState::NOT_STARTED;
+    std::vector<int> objective_progress;  // Текущий прогресс каждого objective
+};
+
+class QuestSystem : public Node {
+    GDCLASS(QuestSystem, Node)
+
+private:
+    std::unordered_map<StringName, QuestProgress, StringNameHasher, StringNameEqual> active_quests;
+    // Обратный индекс: "kill:goblin" → [quest_id1, quest_id2, ...]
+    std::unordered_map<StringName, std::vector<StringName>, StringNameHasher, StringNameEqual> event_index;
+
+    void _rebuild_event_index();
+    void _check_quest_completion(const StringName &quest_id);
+
+protected:
+    static void _bind_methods();
+
+public:
+    bool start_quest(const StringName &quest_id);
+    bool complete_quest(const StringName &quest_id);
+    bool fail_quest(const StringName &quest_id);
+    QuestState get_quest_state(const StringName &quest_id) const;
+    void on_event(const StringName &event_type, const StringName &target_id, int count = 1);
+    bool has_active_quest(const StringName &quest_id) const;
+
+    // Сериализация
+    Dictionary to_dict() const;
+    void from_dict(const Dictionary &data);
+};
+
+} // namespace adv
+```
+
+### quest_system.cpp
+
+```cpp
+#include "quest_system.h"
+#include <godot_cpp/variant/utility_functions.hpp>
+
+namespace adv {
+
+void QuestSystem::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("start_quest", "quest_id"), &QuestSystem::start_quest);
+    ClassDB::bind_method(D_METHOD("complete_quest", "quest_id"), &QuestSystem::complete_quest);
+    ClassDB::bind_method(D_METHOD("fail_quest", "quest_id"), &QuestSystem::fail_quest);
+    ClassDB::bind_method(D_METHOD("get_quest_state", "quest_id"), &QuestSystem::get_quest_state);
+    ClassDB::bind_method(D_METHOD("on_event", "event_type", "target_id", "count"), &QuestSystem::on_event, DEFVAL(1));
+    ClassDB::bind_method(D_METHOD("has_active_quest", "quest_id"), &QuestSystem::has_active_quest);
+    ClassDB::bind_method(D_METHOD("to_dict"), &QuestSystem::to_dict);
+    ClassDB::bind_method(D_METHOD("from_dict", "data"), &QuestSystem::from_dict);
+
+    ADD_SIGNAL(MethodInfo("quest_started", PropertyInfo(Variant::STRING_NAME, "quest_id")));
+    ADD_SIGNAL(MethodInfo("quest_completed", PropertyInfo(Variant::STRING_NAME, "quest_id")));
+    ADD_SIGNAL(MethodInfo("quest_failed", PropertyInfo(Variant::STRING_NAME, "quest_id")));
+    ADD_SIGNAL(MethodInfo("objective_updated", PropertyInfo(Variant::STRING_NAME, "quest_id"),
+                          PropertyInfo(Variant::INT, "objective_index"),
+                          PropertyInfo(Variant::INT, "current"),
+                          PropertyInfo(Variant::INT, "required")));
+}
+
+bool QuestSystem::start_quest(const StringName &quest_id) {
+    auto it = active_quests.find(quest_id);
+    if (it != active_quests.end() && it->second.state != QuestState::NOT_STARTED) {
+        return false; // Квест уже начат
+    }
+
+    QuestProgress progress;
+    progress.quest_id = quest_id;
+    progress.state = QuestState::IN_PROGRESS;
+    progress.objective_progress = {0, 0, 0}; // Инициализация по количеству objectives
+
+    active_quests[quest_id] = progress;
+    _rebuild_event_index();
+    emit_signal("quest_started", quest_id);
+    return true;
+}
+
+bool QuestSystem::complete_quest(const StringName &quest_id) {
+    auto it = active_quests.find(quest_id);
+    if (it == active_quests.end() || it->second.state != QuestState::IN_PROGRESS) {
+        return false;
+    }
+
+    it->second.state = QuestState::COMPLETED;
+    _rebuild_event_index();
+    emit_signal("quest_completed", quest_id);
+    return true;
+}
+
+bool QuestSystem::fail_quest(const StringName &quest_id) {
+    auto it = active_quests.find(quest_id);
+    if (it == active_quests.end() || it->second.state != QuestState::IN_PROGRESS) {
+        return false;
+    }
+
+    it->second.state = QuestState::FAILED;
+    _rebuild_event_index();
+    emit_signal("quest_failed", quest_id);
+    return true;
+}
+
+QuestState QuestSystem::get_quest_state(const StringName &quest_id) const {
+    auto it = active_quests.find(quest_id);
+    return it != active_quests.end() ? it->second.state : QuestState::NOT_STARTED;
+}
+
+void QuestSystem::on_event(const StringName &event_type, const StringName &target_id, int count) {
+    // Формируем ключ: "kill:goblin", "collect:herb", "talk:elder"
+    StringName event_key = StringName(String(event_type) + ":" + String(target_id));
+
+    auto it = event_index.find(event_key);
+    if (it == event_index.end()) return; // Нет квестов для этого события
+
+    // Обновляем прогресс всех затронутых квестов — O(1) поиск + O(K) обновление
+    for (const auto &quest_id : it->second) {
+        auto qit = active_quests.find(quest_id);
+        if (qit == active_quests.end() || qit->second.state != QuestState::IN_PROGRESS) continue;
+
+        // Ищем objective с совпадающим типом и целью
+        // (в реальном коде — читаем QuestData из Resource)
+        for (size_t i = 0; i < qit->second.objective_progress.size(); ++i) {
+            qit->second.objective_progress[i] += count;
+            emit_signal("objective_updated", quest_id, static_cast<int>(i),
+                        qit->second.objective_progress[i], 1);
+        }
+
+        _check_quest_completion(quest_id);
+    }
+}
+
+void QuestSystem::_check_quest_completion(const StringName &quest_id) {
+    auto it = active_quests.find(quest_id);
+    if (it == active_quests.end()) return;
+
+    // Проверяем, все ли objectives выполнены
+    // (в реальном коде — сверяем с QuestData.objectives[i].required)
+    bool all_complete = true;
+    for (int progress : it->second.objective_progress) {
+        if (progress <= 0) {  // Упрощённая проверка
+            all_complete = false;
+            break;
+        }
+    }
+
+    if (all_complete) {
+        complete_quest(quest_id);
+    }
+}
+
+void QuestSystem::_rebuild_event_index() {
+    event_index.clear();
+    for (const auto &[quest_id, progress] : active_quests) {
+        if (progress.state != QuestState::IN_PROGRESS) continue;
+        // В реальном коде — читаем QuestData.objectives для построения индекса
+        // Пример: objective "kill:goblin" → event_index["kill:goblin"].push_back(quest_id)
+    }
+}
+
+bool QuestSystem::has_active_quest(const StringName &quest_id) const {
+    auto it = active_quests.find(quest_id);
+    return it != active_quests.end() && it->second.state == QuestState::IN_PROGRESS;
+}
+
+Dictionary QuestSystem::to_dict() const {
+    Dictionary result;
+    for (const auto &[quest_id, progress] : active_quests) {
+        Dictionary quest_dict;
+        quest_dict["state"] = static_cast<int>(progress.state);
+        Array obj_progress;
+        for (int p : progress.objective_progress) obj_progress.append(p);
+        quest_dict["objectives"] = obj_progress;
+        result[quest_id] = quest_dict;
+    }
+    return result;
+}
+
+void QuestSystem::from_dict(const Dictionary &data) {
+    active_quests.clear();
+    const Array keys = data.keys();
+    for (int i = 0; i < keys.size(); ++i) {
+        StringName quest_id = keys[i];
+        Dictionary quest_dict = data[quest_id];
+        QuestProgress progress;
+        progress.quest_id = quest_id;
+        progress.state = static_cast<QuestState>((int)quest_dict["state"]);
+        Array obj_progress = quest_dict["objectives"];
+        for (int j = 0; j < obj_progress.size(); ++j) {
+            progress.objective_progress.push_back(obj_progress[j]);
+        }
+        active_quests[quest_id] = progress;
+    }
+    _rebuild_event_index();
+}
+
+} // namespace adv
+```
+
+## 5.5 DialogueSystem — система диалогов
+
+Диалоговая система управляет ветками выбора, проверяет условия видимости и выполняет обратные вызовы. Она реализуется на GDScript, так как работает по событиям (не каждый кадр) и тесно интегрирована с UI.
+
+### scripts/dialogue_manager.gd (Autoload)
+
+```gdscript
+extends Node
+
+## Система диалогов — GDScript (работает по событиям, не каждый кадр)
+
+signal dialogue_started(dialogue_id: StringName)
+signal dialogue_ended
+signal line_displayed(speaker: String, text: String, choices: Array)
+signal choice_made(index: int)
+
+var _current_dialogue: DialogueData = null
+var _current_line_index: int = 0
+var _is_active: bool = false
+
+func start_dialogue(dialogue: DialogueData) -> void:
+    if _is_active:
+        return
+    _current_dialogue = dialogue
+    _current_line_index = 0
+    _is_active = true
+    dialogue_started.emit(dialogue.dialogue_id)
+    _display_current_line()
+
+func advance() -> void:
+    if not _is_active or not _current_dialogue:
+        return
+
+    var line := _current_dialogue.lines[_current_line_index] as DialogueLine
+
+    # Если есть выбор — ждём выбора игрока
+    if line.choices.size() > 0:
+        return
+
+    # Выполняем on_complete
+    if line.on_complete != "":
+        _execute_action(line.on_complete)
+
+    _current_line_index += 1
+    if _current_line_index >= _current_dialogue.lines.size():
+        end_dialogue()
+    else:
+        _display_current_line()
+
+func select_choice(index: int) -> void:
+    if not _is_active:
+        return
+
+    var line := _current_dialogue.lines[_current_line_index] as DialogueLine
+    if index < 0 or index >= line.choices.size():
+        return
+
+    var choice := line.choices[index] as DialogueChoice
+
+    # Выполняем действие при выборе
+    if choice.on_select != "":
+        _execute_action(choice.on_select)
+
+    choice_made.emit(index)
+
+    if choice.next_line_index == -1:
+        end_dialogue()
+    else:
+        _current_line_index = choice.next_line_index
+        _display_current_line()
+
+func end_dialogue() -> void:
+    _is_active = false
+    _current_dialogue = null
+    _current_line_index = 0
+    dialogue_ended.emit()
+
+func is_active() -> bool:
+    return _is_active
+
+func _display_current_line() -> void:
+    if not _current_dialogue or _current_line_index >= _current_dialogue.lines.size():
+        end_dialogue()
+        return
+
+    var line := _current_dialogue.lines[_current_line_index] as DialogueLine
+
+    # Проверяем условие видимости
+    if line.condition != "" and not _check_condition(line.condition):
+        # Пропускаем линию, если условие не выполнено
+        _current_line_index += 1
+        _display_current_line()
+        return
+
+    # Фильтруем видимые варианты выбора
+    var visible_choices: Array[DialogueChoice] = []
+    for choice in line.choices:
+        var dc := choice as DialogueChoice
+        if dc.condition == "" or _check_condition(dc.condition):
+            visible_choices.append(dc)
+
+    line_displayed.emit(line.speaker, line.text, visible_choices)
+
+func _check_condition(condition: String) -> bool:
+    # Парсим условия: "has_item:forest_key", "quest_completed:forest_clear"
+    var parts := condition.split(":")
+    if parts.size() < 2:
+        return true
+
+    match parts[0]:
+        "has_item":
+            return InventorySystem.has_item(StringName(parts[1]))
+        "quest_completed":
+            return QuestSystem.get_quest_state(StringName(parts[1])) == QuestState.COMPLETED
+        "has_gold":
+            return EconomyManager.has_gold(int(parts[1]))
+    return true
+
+func _execute_action(action: String) -> void:
+    # Парсим действия: "start_quest:forest_clear", "give_item:health_potion"
+    var parts := action.split(":")
+    if parts.size() < 2:
+        return
+
+    match parts[0]:
+        "start_quest":
+            QuestSystem.start_quest(StringName(parts[1]))
+        "give_item":
+            InventorySystem.add_item(StringName(parts[1]))
+        "remove_item":
+            InventorySystem.remove_item(StringName(parts[1]))
+        "give_gold":
+            EconomyManager.add_gold(int(parts[1]))
+```
+
+## 5.6 DayNightCycle — цикл дня и ночи
+
+Цикл дня и ночи влияет на все подсистемы: освещение, силу врагов, расписание NPC, лут. Полный цикл длится 600 секунд (10 минут реального времени), из которых 360 секунд — день и 240 — ночь.
+
+### day_night_cycle.h
+
+```cpp
+#pragma once
+
+#include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/classes/directional_light3d.hpp>
+#include <godot_cpp/classes/world_environment.hpp>
+
+namespace adv {
+
+class DayNightCycle : public Node {
+    GDCLASS(DayNightCycle, Node)
+
+private:
+    double current_time = 360.0;     // 6:00 утра (секунды от полуночи)
+    double cycle_duration = 600.0;   // 10 минут = полный цикл
+    double time_scale = 1.0;
+
+    DirectionalLight3D *sun_light = nullptr;
+    WorldEnvironment *world_env = nullptr;
+
+    // Границы дня/ночи (в секундах от полуночи)
+    double day_start = 180.0;        // 3:00 — рассвет
+    double day_end = 540.0;          // 9:00 — закат
+
+    // Параметры освещения
+    double day_intensity = 1.0;
+    double night_intensity = 0.15;
+    Color day_color = Color(1.0, 0.95, 0.85);
+    Color night_color = Color(0.1, 0.1, 0.3);
+
+    void _update_lighting(double progress);
+
+protected:
+    static void _bind_methods();
+
+public:
+    void _ready() override;
+    void _process(double delta) override;
+
+    bool is_daytime() const;
+    double get_time_of_day() const;  // В секундах от полуночи
+    double get_normalized_time() const;  // 0.0–1.0 в течение цикла
+    void skip_to(double target_time);
+    double get_day_progress() const; // 0.0–1.0, сколько дня прошло
+
+    void set_time_scale(double p_scale);
+    double get_time_scale() const;
+};
+
+} // namespace adv
+```
+
+### day_night_cycle.cpp
+
+```cpp
+#include "day_night_cycle.h"
+#include <godot_cpp/variant/math.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
+
+namespace adv {
+
+void DayNightCycle::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("is_daytime"), &DayNightCycle::is_daytime);
+    ClassDB::bind_method(D_METHOD("get_time_of_day"), &DayNightCycle::get_time_of_day);
+    ClassDB::bind_method(D_METHOD("get_normalized_time"), &DayNightCycle::get_normalized_time);
+    ClassDB::bind_method(D_METHOD("skip_to", "target_time"), &DayNightCycle::skip_to);
+    ClassDB::bind_method(D_METHOD("get_day_progress"), &DayNightCycle::get_day_progress);
+    ClassDB::bind_method(D_METHOD("set_time_scale", "scale"), &DayNightCycle::set_time_scale);
+    ClassDB::bind_method(D_METHOD("get_time_scale"), &DayNightCycle::get_time_scale);
+
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "time_scale", PROPERTY_HINT_RANGE, "0.1,50.0,0.1"),
+                 "set_time_scale", "get_time_scale");
+
+    ADD_SIGNAL(MethodInfo("day_started"));
+    ADD_SIGNAL(MethodInfo("night_started"));
+    ADD_SIGNAL(MethodInfo("time_changed", PropertyInfo(Variant::FLOAT, "normalized_time")));
+}
+
+void DayNightCycle::_ready() {
+    sun_light = Object::cast_to<DirectionalLight3D>(
+        get_tree()->get_first_node_in_group("sun_light"));
+    world_env = Object::cast_to<WorldEnvironment>(
+        get_tree()->get_first_node_in_group("world_environment"));
+}
+
+void DayNightCycle::_process(double delta) {
+    bool was_day = is_daytime();
+
+    // Обновляем время
+    current_time += delta * time_scale;
+    if (current_time >= cycle_duration) {
+        current_time -= cycle_duration;
+    }
+
+    // Уведомляем о смене дня/ночи
+    bool now_day = is_daytime();
+    if (was_day && !now_day) emit_signal("night_started");
+    if (!was_day && now_day) emit_signal("day_started");
+
+    // Обновляем освещение
+    _update_lighting(get_normalized_time());
+
+    emit_signal("time_changed", get_normalized_time());
+}
+
+void DayNightCycle::_update_lighting(double progress) {
+    if (!sun_light) return;
+
+    // Интерполяция между днём и ночью
+    double t = 0.0;
+    if (is_daytime()) {
+        t = 0.0; // Полный день
+    } else {
+        // Плавный переход на рассвете и закате
+        double time = current_time;
+        if (time < day_start) {
+            // Перед рассветом — ночное освещение
+            t = 1.0 - Math::min(1.0, (day_start - time) / 60.0);
+        } else if (time > day_end) {
+            // После заката — переход к ночи
+            t = Math::min(1.0, (time - day_end) / 60.0);
+        }
+    }
+
+    double intensity = Math::lerp(day_intensity, night_intensity, t);
+    Color light_color = day_color.lerp(night_color, t);
+
+    sun_light->set_light_intensity(intensity);
+    sun_light->set_light_color(light_color);
+
+    // Вращаем солнце по «арке»
+    double sun_angle = Math::deg_to_rad(progress * 360.0);
+    sun_light->set_rotation(Vector3(sun_angle, 0.3, 0.0));
+}
+
+bool DayNightCycle::is_daytime() const {
+    return current_time >= day_start && current_time <= day_end;
+}
+
+double DayNightCycle::get_time_of_day() const {
+    return current_time;
+}
+
+double DayNightCycle::get_normalized_time() const {
+    return current_time / cycle_duration;
+}
+
+void DayNightCycle::skip_to(double target_time) {
+    current_time = Math::clamp(target_time, 0.0, cycle_duration);
+}
+
+double DayNightCycle::get_day_progress() const {
+    if (!is_daytime()) return 1.0;
+    return (current_time - day_start) / (day_end - day_start);
+}
+
+void DayNightCycle::set_time_scale(double p_scale) {
+    time_scale = Math::max(0.1, p_scale);
+}
+
+double DayNightCycle::get_time_scale() const {
+    return time_scale;
+}
+
+} // namespace adv
+```
+
+Влияние DayNightCycle на другие системы:
+
+| Аспект | День | Ночь |
+|---|---|---|
+| Враги | Стандартные | +30% HP, +20% урон, появляются призраки |
+| NPC | Активны, на рабочих местах | Спят, торговля недоступна |
+| Освещение | DirectionalLight3D, яркость 1.0 | Яркость 0.15, синий оттенок |
+| Лут | Стандартный | +50% шанс редкого предмета |
+
+## 5.7 GDScript менеджеры
+
+Менеджеры реализуются на GDScript — они не являются критическим путём производительности и тесно интегрированы с UI Godot.
+
+### scripts/game_manager.gd (Autoload)
+
+```gdscript
+extends Node
+
+## Глобальный менеджер игры — пауза, состояние, ссылка на игрока
+
+signal game_paused
+signal game_resumed
+signal player_died
+
+var is_paused: bool = false
+var player: CharacterBody3D = null
+
+func _ready() -> void:
+    # Работает даже при паузе — важно для меню паузы
+    process_mode = Node.PROCESS_MODE_ALWAYS
+
+func pause_game() -> void:
+    is_paused = true
+    get_tree().paused = true
+    game_paused.emit()
+
+func resume_game() -> void:
+    is_paused = false
+    get_tree().paused = false
+    game_resumed.emit()
+
+func register_player(p: CharacterBody3D) -> void:
+    player = p
+    player.add_to_group("player")  # C++ NPCController найдёт через группу
+
+func unregister_player() -> void:
+    if player:
+        player.remove_from_group("player")
+    player = null
+
+func on_player_death() -> void:
+    player_died.emit()
+    # Респаун на последней точке сохранения
+    await get_tree().create_timer(2.0).timeout
+    SaveManager.load_game()
+```
+
+### scripts/economy_manager.gd (Autoload)
+
+```gdscript
+extends Node
+
+## Менеджер экономики — золото, покупки, продажи
+
+signal balance_changed(new_balance: int)
+
+var _gold: int = 0
+
+func get_gold() -> int:
+    return _gold
+
+func add_gold(amount: int) -> void:
+    if amount <= 0:
+        return
+    _gold += amount
+    balance_changed.emit(_gold)
+
+func spend_gold(amount: int) -> bool:
+    if amount <= 0 or _gold < amount:
+        return false
+    _gold -= amount
+    balance_changed.emit(_gold)
+    return true
+
+func has_gold(amount: int) -> bool:
+    return _gold >= amount
+
+func get_save_data() -> Dictionary:
+    return {"gold": _gold}
+
+func load_save_data(data: Dictionary) -> void:
+    _gold = int(data.get("gold", 0))
+    balance_changed.emit(_gold)
+```
+
+### scripts/audio_manager.gd (Autoload)
+
+```gdscript
+extends Node
+
+## Менеджер звука — BGM с кроссфейдом, пул SFX-каналов
+
+var _bgm_player: AudioStreamPlayer
+var _sfx_players: Array[AudioStreamPlayer] = []
+var _sfx_index: int = 0
+const MAX_SFX_CHANNELS: int = 8
+
+func _ready() -> void:
+    _bgm_player = AudioStreamPlayer.new()
+    _bgm_player.bus = "Master"
+    add_child(_bgm_player)
+
+    # Пул SFX-каналов — без создания/удаления каждый кадр
+    for i in range(MAX_SFX_CHANNELS):
+        var player := AudioStreamPlayer.new()
+        player.bus = "SFX"
+        add_child(player)
+        _sfx_players.append(player)
+
+func play_sfx(stream: AudioStream, volume_db: float = 0.0) -> void:
+    var player := _sfx_players[_sfx_index]
+    player.stream = stream
+    player.volume_db = volume_db
+    player.play()
+    _sfx_index = (_sfx_index + 1) % MAX_SFX_CHANNELS  # Круговой буфер
+
+func play_bgm(stream: AudioStream, fade_time: float = 1.0) -> void:
+    if _bgm_player.playing:
+        # Кроссфейд: затухание текущего → нарастание нового
+        var tween := create_tween()
+        tween.tween_property(_bgm_player, "volume_db", -80.0, fade_time)
+        tween.tween_callback(func(): _start_bgm(stream, fade_time))
+    else:
+        _start_bgm(stream, fade_time)
+
+func _start_bgm(stream: AudioStream, fade_time: float) -> void:
+    _bgm_player.stream = stream
+    _bgm_player.volume_db = -80.0
+    _bgm_player.play()
+    var tween := create_tween()
+    tween.tween_property(_bgm_player, "volume_db", 0.0, fade_time)
+
+func stop_bgm(fade_time: float = 1.0) -> void:
+    var tween := create_tween()
+    tween.tween_property(_bgm_player, "volume_db", -80.0, fade_time)
+    tween.tween_callback(_bgm_player.stop)
+```
+
+## 5.8 Вызов
+
+<Challenge title="Система зелий" difficulty="medium" xp={15}>
+Реализуйте систему крафта зелий. Создайте 6 ингредиентов (тип `material`) и 3 рецепта: **Зелье лечения** (трава + вода → восстановление 30 HP), **Зелье силы** (огненный корень + кристалл → +50% урон на 30 сек), **Зелье скорости** (ветроцвет + эссенция → +30% скорость на 20 сек). Расширьте `InventorySystem::combine_items()` для проверки рецептов, создайте UI-панель `CraftingPanel` и добавьте эффекты зелий в систему боя.
+</Challenge>

@@ -1,0 +1,384 @@
+---
+title: "Глава 3: Настройка проекта"
+project: "project-6-performance-demo"
+chapter: "chapter-03-project-setup"
+order: 3
+xp: 10
+estimatedTime: 30
+tags: []
+---
+
+
+## 3.1 Цели главы
+
+<GoalsList>
+1. **Создать 3D-проект** с рендерером Forward+ для максимальной производительности
+2. **Настроить GDExtension** — файл .gdextension, SCons и register_types
+3. **Организовать структуру директорий** с подпапками cpp/ (ecs/, systems/, shaders/, utils/)
+4. **Подготовить инструменты профилирования** — Godot Profiler, кастомный FPS-счётчик, отображение frame time
+5. **Настроить 3 MultiMeshInstance3D** для Infantry (5K), Cavalry (3K), Archer (2K)
+6. **Собрать сцену** ECSWorld + Camera3D + PerformanceHUD
+</GoalsList>
+
+## 3.2 Создание 3D-проекта с Forward+
+
+Проект производительности требует максимально эффективного рендерера. В Godot 4.x доступно три варианта: Forward+, Mobile и Compatibility. Для десктопного демо с 10 000 юнитов и compute-шейдерами подходит только Forward+ — он обеспечивает доступ к современным GPU-возможностям (storage buffers, compute pipelines) и поддерживает Advanced GPU-фичи.
+
+При создании проекта убедитесь, что выбран рендерер **Forward+** (по умолчанию для десктопа). Если проект уже создан, проверьте настройку в `project.godot`:
+
+```ini
+; project.godot — секция рендеринга
+[rendering]
+
+renderer/rendering_method = "forward_plus"
+textures/vram_compression/import_etc2_astc = true
+anti_aliasing/quality/msaa_3d = 2
+anti_aliasing/quality/screen_space_aa = 0
+```
+
+<Callout type="info" title="Почему Forward+?">
+Рендерер Compatibility не поддерживает compute-шейдеры и storage buffers — ключевые технологии для нашего демо. Рендерер Mobile поддерживает compute, но с ограничениями. Forward+ — единственный вариант, раскрывающий полный потенциал GPU.
+</Callout>
+
+## 3.3 Настройка C++ GDExtension
+
+Настройка GDExtension для проекта производительности сложнее, чем в проектах P4 и P5. Нам нужна полная интеграция с Godot API, поддержка `reloadable = true` для быстрой итерации и регистрация нескольких C++-классов.
+
+### Файл .gdextension
+
+```ini
+; performance_demo.gdextension
+[configuration]
+
+entry_symbol = "performance_demo_library_init"
+compatibility_minimum = 4.3
+reloadable = true
+
+[libraries]
+
+linux.debug.x86_64 = "res://bin/libperformance_demo.linux.debug.x86_64.so"
+linux.release.x86_64 = "res://bin/libperformance_demo.linux.release.x86_64.so"
+windows.debug.x86_64 = "res://bin/libperformance_demo.windows.debug.x86_64.dll"
+windows.release.x86_64 = "res://bin/libperformance_demo.windows.release.x86_64.dll"
+macos.debug = "res://bin/libperformance_demo.macos.debug.framework"
+macos.release = "res://bin/libperformance_demo.macos.release.framework"
+```
+
+Флаг `reloadable = true` позволяет перезагружать библиотеку без перезапуска редактора — это критически важно для быстрой итерации при разработке ECS-ядра.
+
+### Скрипт сборки SCons
+
+```python
+# SConstruct
+import os
+import sys
+
+# Путь к godot-cpp (клонируйте рядом с проектом)
+godot_cpp_path = os.getenv("GODOT_CPP_PATH", "../godot-cpp")
+
+env = Environment(
+    CPPPATH=[godot_cpp_path + "/include", godot_cpp_path + "/gen/include"],
+    CXX="clang++",
+    CXXFLAGS=["-std=c++17", "-O2", "-Wall", "-Wextra", "-fPIC"],
+)
+
+# Исходные файлы — все .cpp из src/
+sources = Glob("src/**/*.cpp")
+
+# Целевая библиотека
+library = env.SharedLibrary(
+    "bin/libperformance_demo${PROGSUFFIX}",
+    source=sources,
+)
+
+# Зависимость от godot-cpp
+env.Append(LIBS=["godot-cpp"])
+env.Append(LIBPATH=[godot_cpp_path + "/bin"])
+env.Append(LINKFLAGS=["-Wl,-rpath,$ORIGIN"])
+
+Default(library)
+```
+
+<Callout type="tip" title="Флаг -O2 для разработки">
+Используйте `-O2` вместо `-O3` во время разработки: `-O3` может агрессивно инлайнить код, затрудняя отладку. Для финальных бенчмарков переключитесь на `-O3 -march=native`.
+</Callout>
+
+### Регистрация типов
+
+```cpp
+// src/register_types.h
+#pragma once
+#include <godot_cpp/core/class_db.hpp>
+
+void initialize_performance_demo_module(godot::ModuleInitializationLevel p_level);
+void uninitialize_performance_demo_module(godot::ModuleInitializationLevel p_level);
+```
+
+```cpp
+// src/register_types.cpp
+#include "register_types.h"
+#include "nodes/ecs_world.h"
+#include "nodes/perf_monitor.h"
+
+void initialize_performance_demo_module(godot::ModuleInitializationLevel p_level) {
+    if (p_level != godot::MODULE_INITIALIZATION_LEVEL_SCENE) {
+        return;
+    }
+    // Регистрируем C++-узлы для использования в Godot
+    godot::ClassDB::register_class<godot::ECSWorld>();
+    godot::ClassDB::register_class<godot::PerfMonitor>();
+}
+
+void uninitialize_performance_demo_module(godot::ModuleInitializationLevel p_level) {
+    if (p_level != godot::MODULE_INITIALIZATION_LEVEL_SCENE) {
+        return;
+    }
+    // Очистка при выгрузке библиотеки
+}
+
+extern "C" {
+    GDExtensionBool performance_demo_library_init(
+        GDExtensionInterfaceGetProcAddress p_get_proc_address,
+        GDExtensionClassLibraryPtr p_library,
+        GDExtensionInitialization *r_initialization) {
+        godot::GDExtensionBinding::InitObject init_obj(
+            p_get_proc_address, p_library, r_initialization);
+        init_obj.register_initializer(initialize_performance_demo_module);
+        init_obj.register_terminator(uninitialize_performance_demo_module);
+        init_obj.set_minimum_library_initialization_level(
+            godot::MODULE_INITIALIZATION_LEVEL_SCENE);
+        return init_obj.init();
+    }
+}
+```
+
+## 3.4 Структура директорий
+
+Проект производительности требует чёткого разделения между ECS-ядром, системами, шейдерами и утилитами. Вот рекомендуемая структура:
+
+```
+performance_demo/
+├── project.godot
+├── performance_demo.gdextension
+├── SConstruct
+├── scenes/
+│   ├── battlefield.tscn           # Главная сцена
+│   └── hud.tscn                   # HUD overlay
+├── scripts/
+│   ├── hud.gd                     # HUD-контроллер (GDScript)
+│   └── camera_controller.gd       # Управление камерой (GDScript)
+├── shaders/
+│   ├── compute_particles.glsl     # Compute-шейдер частиц
+│   ├── compute_boids.glsl         # Compute-шейдер boids
+│   └── terrain.gdshader           # Шейдер рельефа
+├── resources/
+│   ├── unit_config.tres           # Конфигурация юнитов
+│   └── sim_params.tres            # Параметры симуляции
+├── mesh/
+│   ├── infantry_lod0.obj
+│   ├── cavalry_lod0.obj
+│   └── archer_lod0.obj
+├── src/                           # C++ GDExtension
+│   ├── ecs/
+│   │   ├── core.h                 # Registry, EntityID, ComponentMask
+│   │   ├── components.h           # Все компоненты (POD)
+│   │   ├── systems.h              # Все системы
+│   │   └── spatial_hash.h         # Пространственное хеширование
+│   ├── systems/
+│   │   ├── movement_system.h      # Система движения
+│   │   ├── boid_system.h          # Система boids AI
+│   │   ├── render_system.h        # Система рендеринга
+│   │   └── combat_system.h        # Боевая система
+│   ├── shaders/
+│   │   └── compute_manager.h      # Управление compute-шейдерами
+│   ├── utils/
+│   │   ├── pool_allocator.h       # Пул аллокатор
+│   │   ├── frustum.h              # Frustum culling
+│   │   └── lod_system.h           # LOD-система
+│   ├── nodes/
+│   │   ├── ecs_world.h            # ECSWorld (C++ Node)
+│   │   ├── ecs_world.cpp
+│   │   └── perf_monitor.h         # PerfMonitor (C++ Node)
+│   ├── register_types.h
+│   └── register_types.cpp
+└── bin/                           # Скомпилированные библиотеки
+```
+
+<Insight title="Почему подпапки в src/?">
+Когда проект вырастает до 20+ C++ файлов, плоская структура становится неуправляемой. Разделение на `ecs/`, `systems/`, `shaders/`, `utils/` позволяет быстро находить нужный файл и делает архитектуру очевидной из структуры папок. Каждый файл в `systems/` — это отдельная система ECS; каждый файл в `ecs/` — часть ядра.
+</Insight>
+
+## 3.5 Настройка инструментов профилирования
+
+Профилирование — не финальный этап, а первая вещь, которую нужно настроить. Без измерений любая оптимизация — догадка.
+
+### Godot Profiler
+
+Встроенный профайлер Godot (редактор → Debug → Profiler) показывает:
+- Время `_process()` по функциям
+- Количество draw calls
+- Использование памяти
+- Время физического кадра
+
+Для точных результатов запускайте демо в **Release-режиме** (не в редакторе) и используйте `--headless` для чистых CPU-бенчмарков.
+
+### Кастомный FPS-счётчик
+
+Встроенный FPS-счётчик Godot обновляется раз в секунду — слишком медленно для отладки скачков производительности. Мы реализуем кастомный счётчик с отображением каждого кадра:
+
+```gdscript
+# scripts/fps_counter.gd
+extends Label
+
+var frame_times: PackedFloat64Array = []
+var max_samples: int = 60  # Среднее за 60 кадров
+
+func _process(delta: float) -> void:
+    frame_times.append(delta)
+    if frame_times.size() > max_samples:
+        frame_times.pop_front()
+
+    var avg_time := 0.0
+    for t in frame_times:
+        avg_time += t
+    avg_time /= frame_times.size()
+
+    var fps := 1.0 / avg_time if avg_time > 0.0 else 0.0
+    var frame_ms := avg_time * 1000.0
+
+    text = "FPS: %.0f | Frame: %.2fms" % [fps, frame_ms]
+```
+
+### Отображение frame time
+
+Для визуализации frame time мы используем простой граф:
+
+```gdscript
+# scripts/frame_time_graph.gd
+extends Control
+
+var history: PackedFloat32Array = []
+var max_history: int = 200
+var max_time_ms: float = 33.33  # ~30 FPS как максимум шкалы
+
+func _process(delta: float) -> void:
+    history.append(delta * 1000.0)  # мс
+    if history.size() > max_history:
+        history.pop_front()
+    queue_redraw()
+
+func _draw() -> void:
+    var w: float = size.x
+    var h: float = size.y
+    var step_x: float = w / max_history
+
+    # Линия бюджета 16.67мс (60 FPS)
+    var budget_y: float = h - (16.67 / max_time_ms) * h
+    draw_line(Vector2(0, budget_y), Vector2(w, budget_y),
+              Color.GREEN, 1.0, true)
+
+    # График frame time
+    for i in range(history.size() - 1):
+        var x1: float = i * step_x
+        var x2: float = (i + 1) * step_x
+        var y1: float = h - (history[i] / max_time_ms) * h
+        var y2: float = h - (history[i + 1] / max_time_ms) * h
+        var color := Color.YELLOW if history[i] < 16.67 else Color.RED
+        draw_line(Vector2(x1, y1), Vector2(x2, y2), color, 1.5, true)
+```
+
+<Callout type="warning" title="Профилирование-first подход">
+Настраивайте профайлер ДО написания кода, а не после. «Преждевременная оптимизация — корень всех зол» — но **измеренная** оптимизация — это инженерия. Без цифр вы не знаете, где тратится время, и можете оптимизировать то, что и так быстро.
+</Callout>
+
+<Insight title="Преждевременная оптимизация vs измеренная оптимизация">
+Дональд Кнут сказал: «Преждевременная оптимизация — корень всех зол». Но часто забывают вторую часть: «Мы не должны отказываться от возможностей оптимизации там, где она критична». Разница в подходе: преждевременная оптимизация — это догадки («наверное, тут медленно»), измеренная оптимизация — это данные («профайлер показывает 8мс в BoidSystem»). В этом проекте мы сначала измеряем, потом оптимизируем.
+</Insight>
+
+## 3.6 Настройка MultiMeshInstance3D
+
+Три MultiMeshInstance3D — основа рендеринга 10 000 юнитов. Каждый тип юнитов рендерится одним draw call.
+
+### Создание через код
+
+```gdscript
+# scripts/battlefield_setup.gd
+extends Node3D
+
+@export var infantry_count: int = 5000
+@export var cavalry_count: int = 3000
+@export var archer_count: int = 2000
+
+var infantry_mesh: MultiMeshInstance3D
+var cavalry_mesh: MultiMeshInstance3D
+var archer_mesh: MultiMeshInstance3D
+
+func _ready() -> void:
+    infantry_mesh = _create_multimesh("Infantry", infantry_count, _make_unit_mesh(0.3))
+    cavalry_mesh = _create_multimesh("Cavalry", cavalry_count, _make_unit_mesh(0.5))
+    archer_mesh = _create_multimesh("Archer", archer_count, _make_unit_mesh(0.25))
+
+    add_child(infantry_mesh)
+    add_child(cavalry_mesh)
+    add_child(archer_mesh)
+
+func _create_multimesh(name: String, count: int, mesh: Mesh) -> MultiMeshInstance3D:
+    var mmi := MultiMeshInstance3D.new()
+    mmi.name = name + "Mesh"
+
+    var mm := MultiMesh.new()
+    mm.mesh = mesh
+    mm.instance_count = count
+    mm.transform_format = MultiMesh.TRANSFORM_3D
+    # Используем формат без цвета для экономии памяти
+    mm.use_colors = false
+    mm.use_custom_data = false
+
+    mmi.multimesh = mm
+    return mmi
+
+func _make_unit_mesh(size: float) -> ArrayMesh:
+    # Простая капсула как placeholder
+    var st := SurfaceTool.new()
+    st.begin(Mesh.PRIMITIVE_TRIANGLES)
+    # ... создание вершин (опустим для краткости)
+    st.commit(ArrayMesh.new())
+    return st.commit()
+```
+
+<Callout type="info" title="Почему 3 отдельных MultiMesh?">
+Один MultiMesh на тип юнита позволяет: 1) обновлять только нужный тип, 2) использовать разные меши, 3) independently управлять visible_instance_count. Альтернатива — один MultiMesh с switch-мешом — сложнее и не даёт выигрыша при 3 типах.
+</Callout>
+
+## 3.7 Структура сцены
+
+Сцена демо минималистична: минимум узлов, максимум работы через C++.
+
+```
+BattlefieldDemo (Node)                          # Корневая сцена
+├── ECSWorld (C++ Node, GDExtension)           # Ядро: Registry + Systems
+├── Battlefield (Node3D)                        # 3D-контейнер
+│   ├── Terrain (MeshInstance3D)                # Плоскость поля битвы
+│   ├── InfantryMesh (MultiMeshInstance3D)      # ~5000 пехотинцев
+│   ├── CavalryMesh (MultiMeshInstance3D)       # ~3000 кавалеристов
+│   ├── ArcherMesh (MultiMeshInstance3D)        # ~2000 лучников
+│   └── ParticleEffects (GPUParticles3D)        # Взрывы, дым
+├── CameraRig (Node3D)                          # Камера
+│   └── Camera3D
+├── DirectionalLight3D                          # Освещение
+└── PerfMonitor (C++ Node)                     # HUD производительности
+    └── CanvasLayer
+        ├── FPSLabel (Label)
+        ├── FrameTimeGraph (Custom Control)
+        └── ParamsPanel (VBoxContainer)
+```
+
+Сцена собирается в `_ready()` ECSWorld: C++-узел получает указатели на MultiMeshInstance3D через `get_node()` и передаёт их в RenderSystem.
+
+## 3.8 Итоги
+
+В этой главе мы настроили фундамент проекта производительности: создали 3D-проект с Forward+ рендерером, настроили GDExtension с `reloadable = true`, организовали структуру директорий с чётким разделением на `ecs/`, `systems/`, `shaders/`, `utils/`, подготовили инструменты профилирования и создали три MultiMeshInstance3D для рендеринга 10 000 юнитов. Всё готово для написания ECS-ядра в следующей главе.
+
+<Challenge title="Настройте профайлер" difficulty="easy" xp={10}>
+Добавьте в сцену кастомный FPS-счётчик и frame time граф. Запустите сцену с 1000 пустых MultiMesh-инстансов и замерьте baseline frame time. Запишите результат — он понадобится для сравнения с оптимизированной версией.
+</Challenge>
