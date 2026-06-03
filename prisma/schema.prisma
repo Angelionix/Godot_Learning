@@ -22,6 +22,8 @@ model User {
   progress          Progress[]
   badges            Badge[]
   challengeAttempts ChallengeAttempt[]
+  editorSessions    EditorSession[]
+  editorProjects    EditorProject[]
 }
 
 model Progress {
@@ -69,4 +71,42 @@ model ChallengeAttempt {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, projectSlug, chapterSlug, challengeSlug])
+}
+
+/// Сессия Godot Web Editor — отслеживает активные сессии пользователей
+model EditorSession {
+  id            String   @id @default(cuid())
+  userId        String
+  projectSlug   String   // К какому проекту курса привязана сессия
+  status        String   @default("active") // active | expired | closed
+  editorUrl     String?  // URL инстанса Godot Web Editor
+  lastActivity  DateTime @default(now())
+  expiresAt     DateTime // Таймаут сессии (2 часа от создания/обновления)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+/// Проект пользователя в Godot Editor — хранит метаданные, файлы лежат в S3
+model EditorProject {
+  id            String   @id @default(cuid())
+  userId        String
+  projectSlug   String   // project-1-clicker и т.д.
+  name          String   // Пользовательское название проекта
+  description   String?
+  s3Key         String   // Ключ в S3: {userId}/{projectSlug}/{id}/
+  sizeBytes     Int      @default(0) // Размер проекта в байтах
+  fileCount     Int      @default(0) // Количество файлов
+  templateSlug  String?  // Из какого шаблона создан
+  isTemplate    Boolean  @default(false) // Является ли шаблоном
+  lastOpenedAt  DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, projectSlug])
 }

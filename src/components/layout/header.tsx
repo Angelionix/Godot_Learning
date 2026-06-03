@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Moon, Sun, Menu, Gamepad2, Code, User } from "lucide-react";
+import { Moon, Sun, Menu, Gamepad2, Code, User, Terminal } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ const navLinks = [
   { href: "/", label: "Главная" },
   { href: "/learn", label: "Обучение" },
   { href: "/playground", label: "Playground", icon: Code },
+  { href: "/editor", label: "Editor", icon: Terminal },
   { href: "/dashboard", label: "Дашборд" },
   { href: "/profile", label: "Профиль", icon: User },
 ];

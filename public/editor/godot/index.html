@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Godot Web Editor — Placeholder</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .container {
+            text-align: center;
+            padding: 2rem;
+            max-width: 600px;
+        }
+        .logo {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+        }
+        h1 {
+            color: #478CBF;
+            font-size: 1.8rem;
+            margin-bottom: 0.5rem;
+        }
+        .subtitle {
+            color: #888;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }
+        .status {
+            background: rgba(71, 140, 191, 0.1);
+            border: 1px solid rgba(71, 140, 191, 0.3);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .status h2 {
+            color: #478CBF;
+            font-size: 1.1rem;
+            margin-bottom: 0.5rem;
+        }
+        .status p {
+            color: #aaa;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+        .steps {
+            text-align: left;
+            margin: 1.5rem 0;
+        }
+        .steps li {
+            color: #ccc;
+            margin: 0.5rem 0;
+            font-size: 0.9rem;
+        }
+        .steps li::marker {
+            color: #478CBF;
+        }
+        .info {
+            color: #666;
+            font-size: 0.8rem;
+            margin-top: 2rem;
+        }
+        #sab-status {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.85rem;
+            margin-top: 1rem;
+        }
+        .sab-ok { background: rgba(34, 197, 94, 0.15); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.3); }
+        .sab-fail { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">🎮</div>
+        <h1>Godot Web Editor</h1>
+        <p class="subtitle">
+            Полноценный Godot Editor прямо в браузере.<br>
+            Пока это placeholder — реальные WASM-файлы будут добавлены в Sprint 8.
+        </p>
+
+        <div class="status">
+            <h2>Статус интеграции</h2>
+            <p>Godot Web Editor требует экспортированных WASM-файлов от Godot Engine 4.3+.
+            Интеграция запланирована на Sprint 8 (iframe + PostMessage API).</p>
+            <ol class="steps">
+                <li>Экспортировать Godot Editor как Web-приложение</li>
+                <li>Разместить .wasm, .js, .data файлы в Docker volume</li>
+                <li>Настроить COOP/COEP заголовки (готово в Nginx)</li>
+                <li>Реализовать PostMessage API для связи iframe ↔ платформа</li>
+            </ol>
+            <div id="sab-status"></div>
+        </div>
+
+        <p class="info">
+            Docker + Nginx + S3 инфраструктура уже настроена (Sprint 7).<br>
+            Эта страница обслуживается с COOP/COEP заголовками.
+        </p>
+    </div>
+
+    <script>
+        // Проверяем поддержку SharedArrayBuffer
+        const sabStatus = document.getElementById('sab-status');
+        try {
+            const sab = new SharedArrayBuffer(1);
+            sabStatus.textContent = '✅ SharedArrayBuffer поддерживается';
+            sabStatus.className = 'sab-ok';
+        } catch (e) {
+            sabStatus.textContent = '❌ SharedArrayBuffer не поддерживается — нужны COOP/COEP';
+            sabStatus.className = 'sab-fail';
+        }
+
+        // PostMessage API — заглушка для связи с платформой
+        window.addEventListener('message', (event) => {
+            if (event.data?.type === 'godot-learning-ping') {
+                event.source?.postMessage({
+                    type: 'godot-editor-pong',
+                    status: 'placeholder',
+                    version: '0.8.0'
+                }, '*');
+            }
+        });
+    </script>
+</body>
+</html>

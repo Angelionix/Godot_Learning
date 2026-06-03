@@ -23,6 +23,7 @@
 | Спринт 4: Playground | ✅ Завершён | 4.1 ✅, 4.2 ✅, 4.3 ✅ | Monaco Editor + GDScript mock-runtime + челленджи |
 | Спринт 5: Геймификация | ✅ Завершён | 5.1 ✅, 5.2 ✅, 5.3 ✅, 5.4 ✅ | Полная система геймификации + дашборд |
 | Спринт 6: Полировка | ✅ Завершён | 6.1 ✅, 6.2 ✅, 6.3 ✅, 6.4 ✅ | Профиль + PWA + SEO + 364 теста |
+| Спринт 7: Godot Web Editor | ✅ Завершён | 7.1 ✅, 7.2 ✅, 7.3 ✅ | Docker + Nginx + S3 + Editor API + /editor страница |
 
 ---
 
@@ -233,27 +234,63 @@
 
 ### Спринт 7: Инфраструктура Godot Editor (Неделя 9-10)
 
-#### 7.1. Docker + Nginx для Godot Web Editor
-- [ ] Dockerfile с Godot Web Editor WASM-файлами
-- [ ] Nginx конфигурация с COOP/COEP заголовками
-- [ ] SSL-сертификат
-- [ ] Docker Compose: app + godot-editor + minio (S3)
+#### 7.1. Docker + Nginx для Godot Web Editor ✅
+- [x] Dockerfile (multi-stage build, Next.js standalone)
+- [x] Nginx конфигурация с COOP/COEP заголовками
+- [x] Docker Compose: app + godot-editor + minio (S3) + nginx + minio-init
+- [x] .dockerignore для оптимизации сборки
+- [ ] SSL-сертификат (отложено до production)
 
-#### 7.2. S3 / MinIO для хранения проектов
-- [ ] Настроить MinIO (S3-совместимое хранилище)
-- [ ] Bucket: `user-projects`
-- [ ] Структура: `/{userId}/{projectSlug}/`
-- [ ] Presigned URLs для загрузки/скачивания
-- [ ] Квоты: 50 MB на проект
+#### 7.2. S3 / MinIO для хранения проектов ✅
+- [x] Настроить MinIO (S3-совместимое хранилище) в docker-compose
+- [x] Bucket: `user-projects` (автосоздание через minio-init)
+- [x] Структура: `/{userId}/{projectSlug}/{projectId}/`
+- [x] Presigned URLs для загрузки/скачивания (getUploadUrl, getDownloadUrl)
+- [x] Квоты: 50 MB на проект (checkProjectQuota)
+- [x] @aws-sdk/client-s3 + @aws-sdk/s3-request-presigner интеграция
+- [x] S3-клиент с поддержкой MinIO (path-style, forcePathStyle)
+- [x] Fallback при отсутствии S3 (isS3Configured)
 
-#### 7.3. Управление сессиями редактора
-- [ ] API: `POST /api/editor/session` — создать сессию
-- [ ] API: `GET /api/editor/session/:id` — статус сессии
-- [ ] API: `DELETE /api/editor/session/:id` — завершить сессию
-- [ ] Таймаут сессии: 2 часа неактивности
-- [ ] Лимит одновременных сессий: 1 на пользователя
+#### 7.3. Управление сессиями редактора ✅
+- [x] API: `POST /api/editor/session` — создать сессию
+- [x] API: `GET /api/editor/session` — получить активную сессию
+- [x] API: `GET /api/editor/session/:id` — статус сессии
+- [x] API: `PATCH /api/editor/session/:id` — heartbeat (продлить)
+- [x] API: `DELETE /api/editor/session/:id` — завершить сессию
+- [x] Таймаут сессии: 2 часа неактивности (SESSION_TIMEOUT_MS)
+- [x] Лимит одновременных сессий: 1 на пользователя (MAX_SESSIONS_PER_USER)
+- [x] Автоматическое закрытие просроченных сессий (expireStaleSessions)
 
-**Deliverable:** Self-hosted Godot Web Editor + S3 storage
+#### 7.4. Управление проектами ✅ (дополнительно)
+- [x] API: `GET /api/editor/projects` — список проектов
+- [x] API: `POST /api/editor/projects` — создать проект
+- [x] API: `GET /api/editor/projects/:id` — получить проект
+- [x] API: `PATCH /api/editor/projects/:id` — обновить проект
+- [x] API: `DELETE /api/editor/projects/:id` — удалить проект
+- [x] API: `GET /api/editor/projects/:id/files` — список файлов
+- [x] API: `POST /api/editor/projects/:id/files` — presigned URL для загрузки
+- [x] Копирование шаблонов при создании проекта (copyTemplateToUser)
+- [x] Удаление файлов из S3 при удалении проекта
+
+#### 7.5. Страница /editor ✅ (дополнительно)
+- [x] Страница /editor с управлением сессиями
+- [x] 6 шаблонов проектов (P1-P6)
+- [x] Tabs: Мои проекты + Создать из шаблона
+- [x] Проверка поддержки SharedArrayBuffer
+- [x] Heartbeat каждые 60 секунд
+- [x] Iframe для Godot Web Editor
+- [x] Placeholder-страница для Godot Editor (Sprint 8)
+- [x] Информационные карточки (Требования, Сессии, Хранилище)
+
+#### 7.6. Prisma модели ✅
+- [x] EditorSession (сессии редактора)
+- [x] EditorProject (проекты пользователей, файлы в S3)
+
+#### 7.7. Тесты ✅
+- [x] 60 новых тестов (editor-s3, editor-validators, editor-session, editor-api)
+- [x] Итого: 424 теста (20 файлов)
+
+**Deliverable:** ✅ Self-hosted Godot Web Editor инфраструктура + S3 storage + API
 
 ---
 

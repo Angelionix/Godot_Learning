@@ -11,7 +11,7 @@ import { getAllProjectChaptersMap } from "@/lib/chapter-data";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
-const APP_VERSION = "v0.3.0";
+import { APP_VERSION } from "@/lib/version";
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -111,7 +111,7 @@ export function Sidebar() {
           {/* Sidebar Footer */}
           <div className="border-t border-border px-3 py-2 shrink-0">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span className="font-mono">{APP_VERSION}</span>
+              <span className="font-mono">v{APP_VERSION}</span>
               <span>Godot Learning</span>
             </div>
           </div>
