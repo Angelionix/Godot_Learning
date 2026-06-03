@@ -27,8 +27,8 @@ const projectChaptersData: ProjectChaptersData[] = [
       { slug: "chapter-04-gdscript-basics", title: "Глава 4: Основы GDScript" },
       { slug: "chapter-05-implementation", title: "Глава 5: Реализация" },
       { slug: "chapter-06-visual-effects", title: "Глава 6: Визуальные эффекты" },
-      { slug: "chapter-07-publishing", title: "Публикация и экспорт" },
-      { slug: "chapter-08-summary", title: "Глава 7: Итоги проекта" },
+      { slug: "chapter-07-publishing", title: "Глава 7: Публикация и экспорт" },
+      { slug: "chapter-08-summary", title: "Глава 8: Итоги проекта" },
     ],
   },
   {

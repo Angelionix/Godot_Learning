@@ -173,7 +173,7 @@
 
   /* ─── Table styling ─── */
   .prose table {
-    @apply w-full border-collapse text-sm;
+    @apply w-full border-collapse text-sm overflow-x-auto block;
   }
 
   .prose thead {
@@ -198,11 +198,17 @@
 
   /* ─── Better code blocks ─── */
   .prose pre {
-    @apply rounded-lg border border-border;
+    @apply rounded-lg border border-border overflow-x-auto;
   }
 
   .prose pre code {
     @apply text-sm;
+    display: grid;
+  }
+
+  .prose pre [data-line] {
+    padding: 0 1rem;
+    min-width: 0;
   }
 
   .prose code:not(pre code) {
@@ -252,6 +258,35 @@
   /* ─── Strong / emphasis ─── */
   .prose strong {
     @apply text-foreground font-semibold;
+  }
+
+  /* ─── Highlighted text (important moments) ─── */
+  .prose mark {
+    @apply bg-amber-200/60 dark:bg-amber-500/20 text-foreground rounded px-1 py-0.5;
+  }
+
+  .prose .key-point {
+    @apply border-l-4 border-[#478CBF] bg-[#478CBF]/10 pl-4 py-2 my-4 rounded-r-lg;
+  }
+
+  .prose .key-point strong {
+    @apply text-[#478CBF];
+  }
+
+  .prose .warning-note {
+    @apply border-l-4 border-amber-500 bg-amber-500/10 pl-4 py-2 my-4 rounded-r-lg;
+  }
+
+  .prose .warning-note strong {
+    @apply text-amber-600 dark:text-amber-400;
+  }
+
+  .prose .important-note {
+    @apply border-l-4 border-red-500 bg-red-500/10 pl-4 py-2 my-4 rounded-r-lg;
+  }
+
+  .prose .important-note strong {
+    @apply text-red-600 dark:text-red-400;
   }
 
   /* ─── Links ─── */

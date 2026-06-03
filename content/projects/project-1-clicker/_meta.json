@@ -58,14 +58,14 @@
     },
     {
       "slug": "chapter-07-publishing",
-      "title": "Публикация и экспорт",
+      "title": "Глава 7: Публикация и экспорт",
       "order": 7,
       "xp": 10,
       "estimatedTime": 25
     },
     {
       "slug": "chapter-08-summary",
-      "title": "Глава 7: Итоги проекта",
+      "title": "Глава 8: Итоги проекта",
       "order": 8,
       "xp": 5,
       "estimatedTime": 15
