@@ -286,3 +286,26 @@ Stage Summary:
 - All project introductions now use GoalsList for learning objectives
 - List styling improved across all prose content (blue markers, better spacing)
 - Footer displays version badge
+
+---
+Task ID: sprint3-completion
+Agent: main
+Task: Complete Sprint 3 — fill content gaps, add sticky header, update docs
+
+Work Log:
+- Audited real Sprint 3 status: found 3 content gaps (P2/ch5 stub, P2/ch7 partial, P3/intro thin)
+- Wrote P2/ch5-implementation: ~60K characters, 10 sections covering WeaponData, Bullet, Player, ObjectPool, EnemyBase+4 types, Boss, WaveManager, Pickup, HUD, GameManager with full GDScript code
+- Wrote P2/ch7-summary: full project summary with 6 sections (what we built, key concepts, architecture results, patterns, common mistakes, bridge to P3)
+- Expanded P3/introduction: from 1,264 bytes (Git-only) to 7,237 bytes (proper project intro + Git section + GoalsList)
+- Created StickyChapterHeader component: appears on scroll (>250px), shows chapter title + XP + time
+- Integrated StickyChapterHeader into chapter page
+- Updated program-roadmap.md: Sprint 3 marked as ✅ complete, all checkboxes updated
+- Updated tech-debt.md: closed TD-002 (tests) and TD-033 (course sequence), added TD-034 (P2-P6 formatting)
+- Build verified: 45 pages, 0 errors
+
+Stage Summary:
+- Sprint 3 is FULLY COMPLETE
+- All 6 projects have full MDX content (P1: 9 chapters, P2: 7 chapters, P3-P6: 3+ chapters each)
+- All MDX components implemented (10 total: Callout, Insight, GoalsList, Challenge, Sprint, Bridge, CollapsibleHint, MermaidDiagram, CodeBlock, TableOfContents)
+- Chapter page has: TOC sidebar, completion button, estimated time, sticky header, hero card, prev/next navigation
+- Roadmap updated to v3.0, tech debt: 10 open, 24 closed

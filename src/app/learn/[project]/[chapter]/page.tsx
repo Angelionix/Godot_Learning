@@ -19,6 +19,7 @@ import {
   CodeBlock,
 } from '@/components/mdx';
 import { ChapterCompleteButton } from '@/components/chapter-complete-button';
+import { StickyChapterHeader } from '@/components/layout/sticky-chapter-header';
 import {
   getChapterContent,
   getChapterNavigation,
@@ -109,6 +110,14 @@ export default async function ChapterPage({
 
   return (
     <div className="flex w-full">
+      {/* Sticky Chapter Header (appears on scroll) */}
+      <StickyChapterHeader
+        title={chapterContent.meta.title}
+        chapterLabel={currentIndex >= 0 ? `Глава ${currentIndex + 1}` : 'Введение'}
+        xp={chapterContent.meta.xp}
+        estimatedMinutes={estimatedMinutes}
+      />
+
       {/* Center: MDX Content */}
       <div className="flex-1 min-w-0">
         <div className="px-4 md:px-8 py-8 max-w-3xl mx-auto">

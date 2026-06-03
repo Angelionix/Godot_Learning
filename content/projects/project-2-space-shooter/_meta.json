@@ -68,8 +68,8 @@
       "slug": "chapter-07-summary",
       "title": "Глава 7: Итоги проекта",
       "order": 7,
-      "xp": 5,
-      "estimatedTime": 15
+      "xp": 10,
+      "estimatedTime": 20
     }
   ],
   "cheatSheet": "cheat-sheet.mdx",
