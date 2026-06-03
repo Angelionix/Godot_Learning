@@ -58,3 +58,35 @@ Stage Summary:
 - Test coverage expanded from 168 to 251 tests (+83 new tests)
 - 5 new test files created covering: API routes, Zustand stores, extended UI components, MDX components, integration flows
 - All tests green: 14 passed (14), 251 passed (251)
+---
+Task ID: sprint-4
+Agent: main
+Task: Sprint 4 — GDScript Playground
+
+Work Log:
+- Installed @monaco-editor/react
+- Created GDScript Monarch tokenizer with 50+ keywords, 30+ types, 80+ functions, 60+ Node methods, 70+ Godot classes
+- Created Godot-inspired dark theme for Monaco Editor
+- Created GDScriptEditor component with dynamic import, autocompletion, snippets
+- Created GDScript mock interpreter (GDScript → JS transpiler)
+- Created OutputConsole component with error/success indicators
+- Created ChallengeResults component for test validation display
+- Created InteractiveChallenge component with Monaco editor, hints, solutions, XP integration
+- Updated Challenge MDX component to support both text and interactive modes
+- Implemented recordChallengeAttempt in progress.repository.ts (was TODO)
+- Implemented challengeAttemptAction fully (was TODO placeholder)
+- Created /api/challenges API route (GET + POST)
+- Created /playground page with standalone editor, 7 examples, save/load, export/import
+- Added Playground link to Header navigation
+- Updated VERSION to 0.6.0
+- Updated roadmap: Sprint 4 marked as completed
+- Updated tech-debt: TD-008 closed, TD-035/036/037 added
+- Build: 48 pages, 0 errors
+- Git: committed 029a2a0, pushed to main
+
+Stage Summary:
+- Sprint 4 (GDScript Playground) fully implemented
+- Version: 0.6.0
+- New routes: /playground, /api/challenges
+- Key files: gdscript-editor.tsx, gdscript-language.ts, gdscript-interpreter.ts, interactive-challenge.tsx
+- Remaining sprint: Sprint 6 (Polish)
