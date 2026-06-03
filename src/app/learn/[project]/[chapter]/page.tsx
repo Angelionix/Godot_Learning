@@ -10,6 +10,7 @@ import { Progress } from '@/components/ui/progress';
 import {
   Insight,
   Callout,
+  GoalsList,
   Challenge,
   Sprint,
   Bridge,
@@ -43,6 +44,7 @@ export function generateStaticParams() {
 const mdxComponents = {
   Insight,
   Callout,
+  GoalsList,
   Challenge,
   Sprint,
   Bridge,

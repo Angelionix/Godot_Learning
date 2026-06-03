@@ -250,3 +250,39 @@ Stage Summary:
 - Version visible in sidebar footer
 - CHANGELOG and versioning rules documented
 - Goals list now visually highlighted with Callout component
+
+---
+Task ID: versioning-v2
+Agent: main
+Task: Bump version to 0.4.0, add GoalsList component, improve list styling
+
+Work Log:
+- Updated VERSION file: 0.3.0 → 0.4.0
+- Updated package.json version: 0.3.0 → 0.4.0
+- Created `src/lib/version.ts` with APP_VERSION constant and getVersionDisplay()
+- Created `src/components/mdx/goals-list.tsx` — visually distinct goals list with blue accent border, background, and CheckCircle2 icons per item
+- Updated `src/components/layout/footer.tsx` — added version badge (Tag icon + v0.4.0) in monospace badge
+- Updated `docs/versioning.md` — added changelog entry for v0.4.0, complete SemVer rules, release process
+- Updated `globals.css`:
+  - Improved list styling: pl-6, larger markers (text-lg for ul, font-bold for ol), blue markers via --color-godot-blue
+  - Added `.goals-list` CSS class with counter-based numbered circles
+  - Added `.callout-list` for lists inside Callout/Insight components
+  - Added `ol li strong:first-child` blue highlight
+- Updated `src/components/mdx/callout.tsx` — added callout-list class and list styling via arbitrary variants
+- Updated `src/components/mdx/insight.tsx` — same list styling improvements
+- Updated `src/components/mdx/index.ts` — exported GoalsList and GoalItem
+- Updated chapter page to include GoalsList in MDX components
+- Updated all 5 project introductions with GoalsList:
+  - project-1-clicker: replaced Callout with GoalsList
+  - project-2-space-shooter: replaced bold list with GoalsList
+  - project-4-tower-defense: replaced plain list with GoalsList
+  - project-5-3d-adventure: replaced plain list with GoalsList
+  - project-6-performance-demo: replaced plain list with GoalsList
+- Build verified: 45 pages, 0 errors
+
+Stage Summary:
+- Version bumped to 0.4.0 with proper SemVer documentation
+- GoalsList component created with visual distinction (blue border, background, checkmark icons)
+- All project introductions now use GoalsList for learning objectives
+- List styling improved across all prose content (blue markers, better spacing)
+- Footer displays version badge

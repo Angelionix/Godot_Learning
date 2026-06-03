@@ -1,5 +1,6 @@
 export { Insight } from './insight';
 export { Callout } from './callout';
+export { GoalsList, GoalItem } from './goals-list';
 export { Challenge } from './challenge';
 export { Sprint } from './sprint';
 export { Bridge } from './bridge';

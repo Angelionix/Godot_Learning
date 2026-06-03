@@ -34,7 +34,7 @@ export function Callout({ type = 'info', title, children, className }: CalloutPr
         <span>{calloutIcons[type]}</span>
         {title && <span>{title}</span>}
       </div>
-      <div className="text-sm [&>p]:mb-2 [&>p:last-child]:mb-0">{children}</div>
+      <div className="callout-list text-sm [&>p]:mb-2 [&>p:last-child]:mb-0 [&>ol]:my-3 [&>ol]:space-y-2 [&>ol]:pl-5 [&>ol]:list-decimal [&>ul]:my-3 [&>ul]:space-y-2 [&>ul]:pl-5 [&>ul]:list-disc [&_li]:pl-2 [&_li]:leading-6 [&_li::marker]:font-semibold [&_ol_li::marker]:font-bold">{children}</div>
     </div>
   );
 }

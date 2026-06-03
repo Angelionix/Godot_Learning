@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Gamepad2, GitBranch, ExternalLink } from "lucide-react";
+import { Gamepad2, GitBranch, ExternalLink, Tag } from "lucide-react";
+import { getVersionDisplay } from "@/lib/version";
 
 export function Footer() {
   return (
@@ -8,6 +9,10 @@ export function Footer() {
         <div className="flex items-center gap-2">
           <Gamepad2 className="size-4 text-[#478CBF]" />
           <span>&copy; 2026 Godot Learning Platform</span>
+          <span className="flex items-center gap-1 ml-2 px-2 py-0.5 rounded-md bg-muted text-xs font-mono">
+            <Tag className="size-3" />
+            {getVersionDisplay()}
+          </span>
         </div>
         <div className="flex items-center gap-4">
           <Link
