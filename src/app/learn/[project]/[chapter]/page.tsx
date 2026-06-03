@@ -12,6 +12,7 @@ import {
   Callout,
   GoalsList,
   Challenge,
+  ChapterProvider,
   Sprint,
   Bridge,
   CollapsibleHint,
@@ -232,18 +233,20 @@ export default async function ChapterPage({
           )}
 
           {/* Chapter Content - MDX Rendered */}
-          <article className="prose prose-neutral dark:prose-invert max-w-none prose-headings:scroll-mt-20 prose-pre:p-0 prose-pre:bg-transparent">
-            <MDXRemote
-              source={chapterContent.content}
-              components={mdxComponents}
-              options={{
-                mdxOptions: {
-                  remarkPlugins: [remarkGfm],
-                  rehypePlugins: [[rehypePrettyCode, rehypePrettyCodeOptions]],
-                },
-              }}
-            />
-          </article>
+          <ChapterProvider projectSlug={projectSlug} chapterSlug={chapterSlug}>
+            <article className="prose prose-neutral dark:prose-invert max-w-none prose-headings:scroll-mt-20 prose-pre:p-0 prose-pre:bg-transparent">
+              <MDXRemote
+                source={chapterContent.content}
+                components={mdxComponents}
+                options={{
+                  mdxOptions: {
+                    remarkPlugins: [remarkGfm],
+                    rehypePlugins: [[rehypePrettyCode, rehypePrettyCodeOptions]],
+                  },
+                }}
+              />
+            </article>
+          </ChapterProvider>
 
           {/* Complete Button */}
           <div className="mt-8 pt-6 border-t border-border">

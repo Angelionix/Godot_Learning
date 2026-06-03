@@ -8,6 +8,7 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { Footer } from "@/components/layout/footer";
 import { MobileBottomNav } from "@/components/layout/mobile-bottom-nav";
 import { BadgeNotification } from "@/components/gamification/badge-notification";
+import { Toaster } from "@/components/ui/sonner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -116,6 +117,7 @@ export default function RootLayout({
             <Footer />
             <MobileBottomNav />
             <BadgeNotification />
+            <Toaster />
           </QueryProvider>
         </ThemeProvider>
       </body>

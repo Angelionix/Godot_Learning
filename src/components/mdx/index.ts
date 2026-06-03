@@ -2,6 +2,7 @@ export { Insight } from './insight';
 export { Callout } from './callout';
 export { GoalsList, GoalItem } from './goals-list';
 export { Challenge } from './challenge';
+export { ChapterProvider, useChapterContext } from './chapter-context';
 export { Sprint } from './sprint';
 export { Bridge } from './bridge';
 export { CollapsibleHint } from './collapsible-hint';

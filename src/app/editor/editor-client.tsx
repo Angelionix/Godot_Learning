@@ -17,6 +17,8 @@ import {
   Trash2,
   ExternalLink,
   Info,
+  FlaskConical,
+  CheckCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -53,6 +55,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { ProjectFileBrowser } from "@/components/editor/project-file-browser";
+import { GradingButton } from "@/components/editor/grading-button";
+import { GradingResults, type GradingSubmission } from "@/components/editor/grading-results";
+import { useGodotEditor } from "@/hooks/use-godot-editor";
+import { useAutoSave } from "@/hooks/use-auto-save";
 
 // === Типы ===
 
@@ -147,7 +153,47 @@ export function EditorClient() {
   const [newProjectSlug, setNewProjectSlug] = useState("project-1-clicker");
   const [heartbeatInterval, setHeartbeatInterval] = useState<NodeJS.Timeout | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [gradingSubmission, setGradingSubmission] = useState<GradingSubmission | null>(null);
+  const [showGrading, setShowGrading] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // PostMessage API Bridge
+  const godotEditor = useGodotEditor({
+    iframeRef,
+    onReady: () => {
+      toast.success("Godot Editor загружен");
+    },
+    onTestResults: (data) => {
+      const submission: GradingSubmission = {
+        id: "live-" + Date.now(),
+        status: data.summary.failed === 0 ? "passed" : "failed",
+        totalTests: data.summary.total,
+        passedTests: data.summary.passed,
+        failedTests: data.summary.failed,
+        skippedTests: data.summary.skipped,
+        duration: data.summary.duration,
+        xpEarned: 0,
+        testResults: data.tests,
+        createdAt: new Date(),
+      };
+      setGradingSubmission(submission);
+      setShowGrading(true);
+    },
+    onError: (data) => {
+      if (!data.recoverable) {
+        toast.error(`Ошибка редактора: ${data.message}`);
+      }
+    },
+  });
+
+  // Auto-save every 30 seconds when editor is active
+  const autoSave = useAutoSave({
+    intervalMs: 30_000,
+    enabled: session?.status === "active",
+    onSave: async () => {
+      godotEditor.saveProject();
+    },
+  });
 
   // Проверяем поддержку SharedArrayBuffer
   useEffect(() => {
@@ -346,13 +392,28 @@ export function EditorClient() {
             </Badge>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" className="gap-1">
+            {autoSave.lastSaved && (
+              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                <Save className="size-3" />
+                Сохранено {autoSave.lastSaved.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+            <Button variant="ghost" size="sm" className="gap-1" onClick={() => godotEditor.saveProject()}>
               <Save className="size-3.5" />
               Сохранить
             </Button>
             <Button variant="ghost" size="sm" className="gap-1">
               <Download className="size-3.5" />
               Скачать
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1 border-[#478CBF]/50 text-[#478CBF]"
+              onClick={() => godotEditor.runTests()}
+            >
+              <FlaskConical className="size-3.5" />
+              Проверить
             </Button>
             <Button
               variant="destructive"
@@ -545,6 +606,14 @@ export function EditorClient() {
                           )}
                           Открыть в редакторе
                         </Button>
+                        <GradingButton
+                          projectId={project.id}
+                          projectSlug={project.projectSlug}
+                          onResults={(results) => {
+                            setGradingSubmission(results);
+                            setShowGrading(true);
+                          }}
+                        />
                         <Button
                           variant="outline"
                           size="icon"
@@ -710,6 +779,31 @@ export function EditorClient() {
               Создать
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Результаты автогрейдинга */}
+      <Dialog open={showGrading} onOpenChange={setShowGrading}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          {gradingSubmission && (
+            <GradingResults
+              submission={gradingSubmission}
+              onRetry={() => {
+                setShowGrading(false);
+                if (selectedProjectId) {
+                  const project = projects.find((p) => p.id === selectedProjectId);
+                  if (project) {
+                    fetch(`/api/submit/${project.id}`, { method: "POST" })
+                      .then((res) => res.json())
+                      .then((data) => {
+                        setGradingSubmission(data);
+                      });
+                  }
+                }
+              }}
+              onClose={() => setShowGrading(false)}
+            />
+          )}
         </DialogContent>
       </Dialog>
     </div>

@@ -277,7 +277,7 @@ export async function markChapterComplete(
 /**
  * Count how many projects the user has fully completed.
  */
-async function countCompletedProjects(userId: string): Promise<number> {
+export async function countCompletedProjects(userId: string): Promise<number> {
   const projectSlugs = [
     "project-1-clicker",
     "project-2-space-shooter",

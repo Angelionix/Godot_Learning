@@ -24,6 +24,7 @@ model User {
   challengeAttempts ChallengeAttempt[]
   editorSessions    EditorSession[]
   editorProjects    EditorProject[]
+  submissions       ProjectSubmission[]
 }
 
 model Progress {
@@ -108,5 +109,29 @@ model EditorProject {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId, projectSlug])
+}
+
+/// Результат автогрейдинга — хранит историю проверок проектов
+model ProjectSubmission {
+  id            String   @id @default(cuid())
+  userId        String
+  projectId     String   // Ссылка на EditorProject
+  projectSlug   String   // project-1-clicker и т.д.
+  status        String   @default("pending") // pending | running | passed | failed | error
+  totalTests    Int      @default(0)
+  passedTests   Int      @default(0)
+  failedTests   Int      @default(0)
+  skippedTests  Int      @default(0)
+  duration      Int      @default(0) // milliseconds
+  xpEarned      Int      @default(0)
+  testResults   String   // JSON string with detailed test results
+  errorMessage  String?  // Error message if grading failed
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, projectId])
   @@index([userId, projectSlug])
 }

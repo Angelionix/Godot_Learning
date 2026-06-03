@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import dynamic from 'next/dynamic';
+import { useChapterContext } from './chapter-context';
 
 // Lazy-load the interactive challenge (Monaco is heavy)
 const InteractiveChallenge = dynamic(
@@ -38,6 +39,10 @@ interface ChallengeProps {
   xpPenalty?: number;
   /** Interactive mode: "editor" for Monaco editor, "text" for plain text (legacy) */
   mode?: 'editor' | 'text';
+  /** Slug of the project this challenge belongs to */
+  projectSlug?: string;
+  /** Slug of the chapter this challenge belongs to */
+  chapterSlug?: string;
   children: React.ReactNode;
   className?: string;
 }
@@ -66,8 +71,13 @@ export function Challenge({
   mode,
   children,
   className,
+  projectSlug: projectSlugProp,
+  chapterSlug: chapterSlugProp,
 }: ChallengeProps) {
   const [expanded, setExpanded] = useState(false);
+  const chapterContext = useChapterContext();
+  const projectSlug = projectSlugProp || chapterContext.projectSlug;
+  const chapterSlug = chapterSlugProp || chapterContext.chapterSlug;
 
   // If mode is 'editor' or we have starterCode/testCases, use interactive mode
   const isInteractive = mode === 'editor' || !!starterCode || !!testCases;
@@ -101,6 +111,8 @@ export function Challenge({
         xp={xp}
         xpPenalty={xpPenalty}
         mode="validate"
+        projectSlug={projectSlug}
+        chapterSlug={chapterSlug}
       >
         {children}
       </InteractiveChallenge>

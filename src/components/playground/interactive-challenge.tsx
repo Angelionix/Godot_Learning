@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { Play, RotateCcw, Lightbulb, Eye, Award, Code, Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import GDScriptEditor from '@/components/playground/gdscript-editor';
 import OutputConsole from '@/components/playground/output-console';
@@ -35,6 +36,10 @@ export interface InteractiveChallengeProps {
   className?: string;
   /** Called when challenge is completed */
   onComplete?: (challengeId: string, passed: boolean) => void;
+  /** Slug of the project this challenge belongs to */
+  projectSlug?: string;
+  /** Slug of the chapter this challenge belongs to */
+  chapterSlug?: string;
 }
 
 const difficultyConfig: Record<string, { label: string; border: string; bg: string; badge: string }> = {
@@ -62,6 +67,8 @@ export default function InteractiveChallenge({
   mode = 'validate',
   className = '',
   onComplete,
+  projectSlug,
+  chapterSlug,
 }: InteractiveChallengeProps) {
   const [code, setCode] = useState(starterCode);
   const [isRunning, setIsRunning] = useState(false);
@@ -71,14 +78,54 @@ export default function InteractiveChallenge({
   const [showSolution, setShowSolution] = useState(false);
   const [hasAttempted, setHasAttempted] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
+  const [serverAttempts, setServerAttempts] = useState<number | null>(null);
+  const attemptCountRef = useRef(0);
+  const persistingRef = useRef(false);
 
   const config = difficultyConfig[difficulty] || defaultDifficultyConfig;
   const totalXpPenalty = hintsRevealed * xpPenalty;
   const effectiveXp = Math.max(0, xp - totalXpPenalty);
 
+  const persistAttempt = useCallback(async (passed: boolean, userCode: string) => {
+    if (persistingRef.current) return; // Prevent duplicate calls
+    if (!projectSlug || !chapterSlug) return; // Cannot persist without slugs
+
+    persistingRef.current = true;
+    try {
+      const response = await fetch('/api/challenges', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectSlug,
+          chapterSlug,
+          challengeSlug: id,
+          passed,
+          attempts: attemptCountRef.current,
+          code: userCode,
+          xp: passed ? effectiveXp : 0,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          setServerAttempts(data.attempts);
+          if (data.xpEarned > 0) {
+            toast.success(`Вы заработали ${data.xpEarned} XP за выполнение задания!`);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to persist challenge attempt:', err);
+    } finally {
+      persistingRef.current = false;
+    }
+  }, [projectSlug, chapterSlug, id, effectiveXp]);
+
   const handleRun = useCallback(async () => {
     setIsRunning(true);
     setValidation(null);
+    attemptCountRef.current += 1;
 
     // Small delay for UX
     await new Promise((r) => setTimeout(r, 100));
@@ -97,6 +144,9 @@ export default function InteractiveChallenge({
           if (val.passed && !isCompleted) {
             setIsCompleted(true);
             onComplete?.(id, true);
+            persistAttempt(true, code);
+          } else if (!val.passed) {
+            persistAttempt(false, code);
           }
         }
       } else if (testCases.length > 0) {
@@ -110,6 +160,9 @@ export default function InteractiveChallenge({
         if (val.passed && !isCompleted) {
           setIsCompleted(true);
           onComplete?.(id, true);
+          persistAttempt(true, code);
+        } else if (!val.passed) {
+          persistAttempt(false, code);
         }
       } else {
         // No test cases — just execute
@@ -123,17 +176,21 @@ export default function InteractiveChallenge({
         errors: [error.message || 'Неизвестная ошибка'],
         duration: 0,
       });
+      // Persist failed attempt even on runtime error
+      persistAttempt(false, code);
     } finally {
       setIsRunning(false);
       setHasAttempted(true);
     }
-  }, [code, mode, testCases, id, isCompleted, onComplete]);
+  }, [code, mode, testCases, id, isCompleted, onComplete, persistAttempt]);
 
   const handleReset = useCallback(() => {
     setCode(starterCode);
     setExecuteResult(null);
     setValidation(null);
     setHasAttempted(false);
+    attemptCountRef.current = 0;
+    setServerAttempts(null);
   }, [starterCode]);
 
   const handleRevealHint = useCallback(() => {

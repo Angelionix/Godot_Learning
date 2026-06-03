@@ -5,6 +5,75 @@ All notable changes to the Godot Learning Platform will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-06-03
+
+### Sprint 8 — iframe-интеграция + Автогрейдинг
+
+### Added
+
+- **PostMessage API Bridge** (`useGodotEditor` hook):
+  - 7 outgoing message types (Platform → Editor): ping, load-project, save-project, run-tests, get-files, set-theme, navigate
+  - 8 incoming message types (Editor → Platform): ready, pong, project-loaded, project-saved, test-results, error, files-list, activity
+  - Full TypeScript typing for all payloads
+  - Origin validation and prefix filtering
+  - Connection state tracking (`isConnected`, `lastActivity`)
+- **Auto-save Hook** (`useAutoSave`):
+  - Configurable interval (default 30s)
+  - Concurrent save prevention
+  - Manual `saveNow()` trigger
+  - Tracks `lastSaved` and `isSaving` state
+- **Auto-grading API** (`/api/submit/[projectId]`):
+  - POST submits project for grading with mock pattern-matching engine
+  - GET retrieves latest submission
+  - Mock grading checks for all 6 projects (3-5 checks each): required variables, functions, signals, extends
+  - XP awarding: 50 base + 25 bonus for first submission
+  - Level/streak updates on successful grading
+  - Real mode stub for headless Godot + GUT integration
+- **Prisma: ProjectSubmission model** — tracks grading history (status, test counts, duration, XP, JSON results)
+- **Grading Repository** — full CRUD for submissions
+- **Grading Validators** — Zod schemas for submission and test result data
+- **GUT Test Templates** — 42 test cases across 6 projects:
+  - `project-1-clicker/tests/test_clicker.gd` (6 tests)
+  - `project-2-space-shooter/tests/test_space_shooter.gd` (7 tests)
+  - `project-3-metroidvania/tests/test_metroidvania.gd` (8 tests)
+  - `project-4-tower-defense/tests/test_tower_defense.gd` (8 tests)
+  - `project-5-3d-adventure/tests/test_3d_adventure.gd` (7 tests)
+  - `project-6-performance-demo/tests/test_performance.gd` (6 tests)
+  - Shared `.gutconfig.json` configuration
+  - README.md for each test suite (Russian)
+- **GradingResults component** — full test results display:
+  - Status header with 5 states (passed/failed/error/running/pending)
+  - Summary stats cards (total, passed, failed, skipped)
+  - Donut chart (recharts) showing pass/fail/skip ratio
+  - Duration display, XP badge with animation
+  - Expandable test details grouped by suite
+  - Error state with retry suggestion
+- **GradingButton component** — trigger grading from project cards:
+  - POST to submit API on click
+  - Loading state with spinner
+  - Previous submission badge indicator
+  - Toast notifications
+- **Editor toolbar** — enhanced with:
+  - Auto-save indicator ("Сохранено HH:MM")
+  - "Проверить" button (FlaskConical icon) via PostMessage
+  - "Сохранить" button triggers PostMessage save
+- **Grading dialog** — modal with GradingResults for submission viewing
+
+### Fixed
+
+- **TD-036**: InteractiveChallenge now persists attempts to database via `/api/challenges` API
+  - Added `projectSlug` and `chapterSlug` props
+  - Calls POST on challenge pass/fail
+  - Shows toast with XP earned
+  - Created `ChapterProvider` context for slug propagation
+  - Updated MDX `Challenge` component wrapper
+
+### Changed
+
+- Version bumped from 0.9.0 to 0.10.0
+- Editor page now shows GradingButton on each project card
+- Editor toolbar shows auto-save status and "Проверить" button
+
 ## [0.9.0] - 2026-06-03
 
 ### Sprint 7 — Godot Web Editor (Docker + Nginx + S3) — Enhanced
