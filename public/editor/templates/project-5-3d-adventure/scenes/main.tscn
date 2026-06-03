@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://3d_adventure_main_scene"]
+
+[node name="Main" type="Node3D"]
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 5)

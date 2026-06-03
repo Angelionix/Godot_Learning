@@ -52,6 +52,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
+import { ProjectFileBrowser } from "@/components/editor/project-file-browser";
 
 // === Типы ===
 
@@ -145,6 +146,7 @@ export function EditorClient() {
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectSlug, setNewProjectSlug] = useState("project-1-clicker");
   const [heartbeatInterval, setHeartbeatInterval] = useState<NodeJS.Timeout | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   // Проверяем поддержку SharedArrayBuffer
@@ -435,6 +437,12 @@ export function EditorClient() {
             <Plus className="size-4" />
             Создать из шаблона
           </TabsTrigger>
+          {selectedProjectId && (
+            <TabsTrigger value="files" className="gap-1.5">
+              <Monitor className="size-4" />
+              Файлы
+            </TabsTrigger>
+          )}
         </TabsList>
 
         {/* Мои проекты */}
@@ -524,18 +532,28 @@ export function EditorClient() {
                           </span>
                         )}
                       </div>
-                      <Button
-                        className="w-full gap-1.5"
-                        onClick={() => startSession(project.projectSlug)}
-                        disabled={editorLoading}
-                      >
-                        {editorLoading ? (
-                          <Loader2 className="size-4 animate-spin" />
-                        ) : (
-                          <Play className="size-4" />
-                        )}
-                        Открыть в редакторе
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          className="flex-1 gap-1.5"
+                          onClick={() => startSession(project.projectSlug)}
+                          disabled={editorLoading}
+                        >
+                          {editorLoading ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <Play className="size-4" />
+                          )}
+                          Открыть в редакторе
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          onClick={() => setSelectedProjectId(project.id)}
+                          title="Файлы проекта"
+                        >
+                          <FolderOpen className="size-4" />
+                        </Button>
+                      </div>
                     </CardContent>
                   </Card>
                 );
@@ -543,6 +561,26 @@ export function EditorClient() {
             </div>
           )}
         </TabsContent>
+
+        {/* Файлы проекта */}
+        {selectedProjectId && (
+          <TabsContent value="files" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-medium">Файлы проекта</h3>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setSelectedProjectId(null)}
+              >
+                Назад к проектам
+              </Button>
+            </div>
+            <ProjectFileBrowser
+              projectId={selectedProjectId}
+              projectSlug={projects.find((p) => p.id === selectedProjectId)?.projectSlug || ""}
+            />
+          </TabsContent>
+        )}
 
         {/* Создать из шаблона */}
         <TabsContent value="templates" className="space-y-4">

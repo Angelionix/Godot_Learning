@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Godot-style gear icon -->
+  <defs>
+    <linearGradient id="gearGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#478CBF;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#3A6F9F;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Gear body -->
+  <path d="M64 8 L72 24 L88 16 L88 34 L106 34 L98 50 L114 58 L98 66 L106 82 L88 82 L88 100 L72 92 L64 108 L56 92 L40 100 L40 82 L22 82 L30 66 L14 58 L30 50 L22 34 L40 34 L40 16 L56 24 Z" fill="url(#gearGrad)" stroke="#2A5278" stroke-width="2"/>
+  <!-- Center circle -->
+  <circle cx="64" cy="58" r="18" fill="#1A1A2E" stroke="#2A5278" stroke-width="2"/>
+  <!-- Inner highlight -->
+  <circle cx="64" cy="58" r="10" fill="#478CBF" opacity="0.3"/>
+  <!-- Eyes (Godot robot style) -->
+  <circle cx="55" cy="55" r="4" fill="#FFFFFF"/>
+  <circle cx="73" cy="55" r="4" fill="#FFFFFF"/>
+  <circle cx="56" cy="54" r="2" fill="#1A1A2E"/>
+  <circle cx="74" cy="54" r="2" fill="#1A1A2E"/>
+</svg>

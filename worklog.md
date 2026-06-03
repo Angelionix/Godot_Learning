@@ -90,3 +90,170 @@ Stage Summary:
 - New routes: /playground, /api/challenges
 - Key files: gdscript-editor.tsx, gdscript-language.ts, gdscript-interpreter.ts, interactive-challenge.tsx
 - Remaining sprint: Sprint 6 (Polish)
+
+---
+Task ID: 2
+Agent: Fullstack Developer
+Task: Create health check API route and Docker environment file
+
+Work Log:
+- Explored project structure: reviewed existing API routes (`/api/progress`, `/api/challenges`), lib modules (`prisma.ts`, `s3.ts`, `version.ts`, `db.ts`), Docker config (`Dockerfile`, `docker-compose.yml`), and `.env`
+- Created `src/app/api/health/route.ts`:
+  - GET /api/health endpoint for Docker healthcheck
+  - Checks database connectivity via `prisma.$queryRaw`SELECT 1``
+  - Checks S3 availability via `isS3Configured()` from `@/lib/s3`
+  - Returns JSON: `{ status, version, timestamp, uptime, checks: { database, s3 } }`
+  - Status "ok" when both DB and S3 are available
+  - Status "degraded" when DB is up but S3 is not (HTTP 200)
+  - Returns HTTP 503 when database is down
+  - Version read from `APP_VERSION` constant in `@/lib/version` (aligned with VERSION file: 0.8.0)
+  - Uptime calculated from module-load time (`SERVER_START_TIME`)
+- Created `.env.docker`:
+  - Example Docker environment file with all required variables
+  - Commented-out structure with safe defaults for local development
+  - Includes: NODE_ENV, DATABASE_URL, S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET, GODOT_EDITOR_URL, MINIO_ROOT_USER, MINIO_ROOT_PASSWORD
+  - Russian comments explaining each variable with production warnings
+- No existing files modified
+
+Stage Summary:
+- 2 new files created: `src/app/api/health/route.ts`, `.env.docker`
+- Health check endpoint follows existing code patterns (NextResponse, prisma import, isS3Configured)
+- Docker env file provides complete configuration reference for deployment
+
+---
+Task ID: 3
+Agent: Fullstack Developer
+Task: Replace placeholder Godot Web Editor HTML with proper Godot Editor loader
+
+Work Log:
+- Analyzed existing placeholder at `/home/z/my-project/public/editor/godot/index.html` (134 lines, basic SAB check + minimal PostMessage)
+- Reviewed editor-client.tsx for PostMessage API integration patterns (iframe communication, session management)
+- Reviewed nginx/godot-editor.conf for COOP/COEP header configuration
+- Reviewed API routes: `/api/editor/projects/[projectId]/files` (GET for listing, POST for presigned URLs)
+- Replaced placeholder with comprehensive 1176-line Godot Editor loader HTML page featuring:
+
+  1. **WASM Availability Detection** — HEAD requests for `godot-editor.js`, `godot-editor.wasm`, `godot-editor.data`; routes to fallback mode when files are missing
+
+  2. **Professional Loading Screen** — CSS-styled "G" letter in Godot blue (#478CBF) with gradient, floating animation, progress bar with indeterminate/determinate modes, percentage display, Russian status messages (Проверка доступности движка... → Загрузка WASM и данных проекта... → Godot Editor запущен!)
+
+  3. **Full Bidirectional PostMessage API** — Listens for: `godot-learning-ping`, `godot-learning-load-project`, `godot-learning-save-project`, `godot-learning-get-files`; Sends: `godot-editor-ready`, `godot-editor-error`, `godot-editor-project-loaded`, `godot-editor-project-saved`, `godot-editor-pong`; All messages formatted as `{ type: string, payload?: any, timestamp: number }`
+
+  4. **SharedArrayBuffer Check** — Tests `new SharedArrayBuffer(1)` with try/catch, displays status as pill badge (green/red)
+
+  5. **COEP Check** — Uses `window.crossOriginIsolated` detection, also shown as status badge on both loading and fallback screens
+
+  6. **Fallback Mode** — When WASM files are absent: shows "Редактор недоступен" card with Docker setup instructions (4-step guide with inline `<code>` elements), link back to `/editor`, explicit note that PostMessage API still works in placeholder mode, SAB/COEP status badges
+
+  7. **Project File Sync** — `loadProjectFiles(projectSlug)` fetches from `/api/editor/projects` then `/api/editor/projects/{id}/files`; `saveProjectFile(fileName, content, contentType)` uses presigned URL flow (POST for URL → PUT to upload); `getFileContent(fileKey)` for downloading; all exposed via PostMessage so WASM engine can use them
+
+  8. **Auto-Reconnect** — Crash detection via `window.error` and `unhandledrejection` listeners (filters for wasm/memory/abort keywords); Error screen with "Повторить" (Retry) button and "Назад к проектам" (Back) button; Sends `godot-editor-error` messages to parent on crash
+
+  9. **Godot Engine Loader** — Follows official Godot Web export pattern: dynamically loads `godot-editor.js`, creates `new Engine({ args: [], canvasResizePolicy: 1 })`, calls `engine.startGame({ executable: 'godot-editor', args: ['--project-manager'] })`, wrapped in try-catch since Engine class won't exist in placeholder mode
+
+  10. **Styling** — Dark background (#1a1a2e) with radial gradient overlay, Godot blue (#478CBF) accent, CSS custom properties for full color system, responsive layout (mobile breakpoint at 640px), `prefers-reduced-motion` support, focus-visible outlines for accessibility, ARIA labels on interactive elements, monospace font for technical text
+
+- Exposed `window.__godotEditor` debug API with state, config, loadProjectFiles, saveProjectFile, sendMessage, retry
+- COOP/COEP meta tags added to HTML head for proper cross-origin isolation
+- Version display: v0.8.0
+
+Stage Summary:
+- Single HTML file: 1176 lines (CSS + HTML + JavaScript), zero external dependencies
+- Fully compatible with existing nginx COOP/COEP configuration
+- PostMessage API compatible with editor-client.tsx iframe communication
+- Project file sync integrates with existing `/api/editor/projects/{id}/files` API routes
+
+---
+Task ID: 4
+Agent: Template Creator
+Task: Create starter template files for Godot Engine 4.3+ projects
+
+Work Log:
+- Created directory structure under `/public/editor/templates/` with 6 project directories and a shared assets directory
+- Created `shared/icon.svg` — minimal Godot-style gear/robot icon SVG with gradient fill
+- Copied icon.svg to each project directory (referenced as `res://icon.svg` in project.godot)
+- Created 6 `project.godot` files with Godot 4.3+ format:
+  1. `project-1-clicker` — "Кликер / Idle-игра", 2D, 1280×720, gl_compatibility, physics 60 ticks, features: clicker, idle
+  2. `project-2-space-shooter` — "Космический шутер", 2D, 1280×720, gl_compatibility, features: shooter, space, physics
+  3. `project-3-metroidvania` — "Метроидвания", 2D, 1280×720, gl_compatibility, features: metroidvania, platformer
+  4. `project-4-tower-defense` — "Tower Defense", 2D, 1280×720, gl_compatibility, features: tower-defense, strategy
+  5. `project-5-3d-adventure` — "3D Приключение", 3D, 1280×720, forward_plus, features: adventure, exploration
+  6. `project-6-performance-demo` — "Performance Demo", 3D, 1280×720, forward_plus, features: performance, optimization
+- Created 6 `README.md` files in Russian with project descriptions, recommended directory structures, and feature tags
+- Created 6 `scenes/main.tscn` files:
+  - 2D projects (1-4): Node2D root node
+  - 3D projects (5-6): Node3D root node with Camera3D child
+- All project.godot files include: config/name, run/main_scene, config/features (with custom tags), config/icon, display settings, rendering method
+
+Stage Summary:
+- 25 files created total (6 × project.godot + 6 × README.md + 6 × main.tscn + 6 × icon.svg + 1 × shared/icon.svg)
+- All templates follow Godot 4.3+ project file format
+- 2D projects use gl_compatibility renderer; 3D projects use forward_plus renderer
+- Templates ready for use as base projects in the Web Editor
+
+---
+Task ID: 5
+Agent: Fullstack Developer
+Task: Create file browser component for the Godot Web Editor page
+
+Work Log:
+- Analyzed existing code patterns: reviewed `editor-client.tsx` (component structure, imports, Russian text patterns), `storage.ts` (file API, presigned URLs, quotas), `s3.ts` (MAX_PROJECT_SIZE = 50MB), API route `files/route.ts` (GET for listing, POST for presigned URL)
+- Reviewed UI component APIs: Card, Button, AlertDialog, Badge, Progress, Separator, ScrollArea
+- Created directory `src/components/editor/`
+- Created `src/components/editor/project-file-browser.tsx` — comprehensive file browser component with:
+
+  1. **File List View** — Displays files with:
+     - File icon based on extension: .gd → FileCode (Godot blue), .tscn → FileCode (green), .tres → FileCode (orange), .godot → FileCode (Godot blue), .png/.jpg/.webp/.svg → FileImage (purple), default → File (muted)
+     - File name with type badge (GDScript/Сцена/Ресурс/Проект/PNG/JPEG/etc.)
+     - File size formatted in B/KB/MB
+     - Last modified date in Russian locale (toLocaleDateString "ru-RU")
+     - Download button per file
+     - Hover effect on rows
+
+  2. **Upload Button** — File upload with presigned URL flow:
+     - Hidden file input with accepted extensions (.gd, .tscn, .tres, .godot, .png, .jpg, .webp, .svg, .wav, .ogg, .mp3, .cfg, .ini, .json, .txt, .xml, .csv)
+     - POST to `/api/editor/projects/{projectId}/files` to get presigned upload URL
+     - PUT to presigned URL with file content and Content-Type header
+     - Upload progress indicator with animated progress bar
+     - Validates file size against 50MB project quota
+     - Refreshes file list after successful upload
+     - Shows toast notifications for success/error
+
+  3. **Delete Button** — Per file delete with confirmation:
+     - AlertDialog confirmation dialog in Russian
+     - Shows file name and size in confirmation message
+     - DELETE request to `/api/editor/projects/{projectId}/files?key={fileKey}`
+     - Loading spinner while deleting
+     - Toast notifications for success/error
+     - Refreshes file list after deletion
+
+  4. **Storage Info** — Shows used/total storage:
+     - HardDrive icon with "Хранилище" label
+     - Progress bar with dynamic color: green (#478CBF) < 70%, yellow 70-90%, red > 90%
+     - Warning messages when storage is getting full (>70%) or almost full (>90%)
+     - Format: "12.5 MB / 50 MB"
+
+  5. **Empty State** — When no files exist:
+     - Upload icon in rounded background
+     - "Нет файлов" heading
+     - Descriptive text about uploading project files
+     - CTA button "Загрузить первый файл"
+
+  6. **S3 Unavailable State** — When S3 is not configured:
+     - HardDrive icon
+     - "Хранилище недоступно" heading
+     - Message about MinIO/S3 setup requirement
+
+  7. **Loading State** — Spinner while fetching files
+
+- Props: `{ projectId: string; projectSlug: string }`
+- All text in Russian, following editor-client.tsx patterns
+- Uses existing UI components: Card, Button, AlertDialog, Badge, Separator, Progress
+- Uses lucide-react icons: File, FileCode, FileImage, FolderOpen, Upload, Download, Trash2, HardDrive, Loader2
+- Uses toast from sonner for notifications
+- Lint check: 0 errors in the new file
+
+Stage Summary:
+- 1 new file created: `src/components/editor/project-file-browser.tsx` (~310 lines)
+- Component integrates with existing API routes and storage infrastructure
+- Full Russian localization
+- Follows existing code patterns and uses existing UI components
