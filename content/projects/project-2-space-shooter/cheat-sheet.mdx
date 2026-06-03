@@ -1,0 +1,61 @@
+---
+title: "Шпаргалка: 2D Physics & Collisions"
+project: "project-2-space-shooter"
+chapter: "cheat-sheet"
+order: 98
+xp: 0
+estimatedTime: 0
+tags: []
+type: "cheat-sheet"
+---
+
+### CharacterBody2D
+| Действие | Код | Раздел |
+|---|---|---|
+| Движение | `velocity = direction * speed; move_and_slide()` | P2 §2.1 |
+| Гравитация | `velocity.y += gravity * delta` | P2 §3.3 |
+| Направление к цели | `(target.global_position - global_position).normalized()` | P2 §3.5 |
+| Ограничение скорости | `velocity = velocity.limit_length(max_speed)` | P2 §3.3 |
+
+### Слои и маски столкновений
+| Действие | Код | Раздел |
+|---|---|---|
+| Установить слой | `collision_layer = 0b0010` (бит 2) | P2 §2.7 |
+| Установить маску | `collision_mask = 0b0001 \| 0b0100` (биты 1 и 3) | P2 §2.7 |
+| Проверить столкновение | `move_and_slide()` + `get_slide_collision(i)` | P2 §3.3 |
+| Рекомендуемые слои | 1: Player, 2: Enemies, 3: PlayerBullets, 4: EnemyBullets | P2 §2.7 |
+
+### Object Pool
+| Действие | Код | Раздел |
+|---|---|---|
+| Создать пул | `ObjectPool.preload(bullet_scene, 50)` | P2 §3.4 |
+| Получить объект | `var bullet = ObjectPool.get_instance(BulletScene)` | P2 §3.4 |
+| Вернуть объект | `ObjectPool.release(bullet)` | P2 §3.4 |
+| Вместо queue_free | Вызвать `release()`, а не `queue_free()` | P2 §3.4 |
+| Предзагрузка | `_ready(): for i in pool_size: _pool.append(scene.instantiate())` | P2 §3.4 |
+
+### Частицы
+| Тип | Когда использовать | Раздел |
+|---|---|---|
+| GPUParticles2D | Много частиц (50+), высокопроизводительные эффекты | P2 §3.7 |
+| CPUParticles2D | Мало частиц, нужен код для каждой частицы | P2 §3.7 |
+| Emission Shape | Point, Sphere, Box, Ring — определяет зону спавна | P2 §3.7 |
+| One Shot | `true` для взрывов, `false` для Trails | P2 §3.7 |
+
+### Шейдеры (ShaderMaterial)
+| Действие | Код | Раздел |
+|---|---|---|
+| Создать материал | `ShaderMaterial.new()` + `shader = Shader.new()` | P2 §3.6 |
+| Uniform-переменная | `uniform float flash_intensity : hint_range(0, 1) = 0.0;` | P2 §3.6 |
+| Установить uniform | `material.set_shader_parameter("flash_intensity", 1.0)` | P2 §3.6 |
+| Vertex shader | `void vertex() { VERTEX += vec2(offset, 0.0); }` | P2 §3.6 |
+| Fragment shader | `void fragment() { COLOR = texture(TEXTURE, UV); }` | P2 §3.6 |
+
+### Tween (программные анимации)
+| Действие | Код | Раздел |
+|---|---|---|
+| Создать | `var tween = create_tween()` | P2 §3.8 |
+| Анимировать свойство | `tween.tween_property(self, "modulate:a", 0.0, 0.5)` | P2 §3.8 |
+| Вызов по завершении | `tween.tween_callback(queue_free)` | P2 §3.8 |
+| Параллельно | `tween.parallel().tween_property(...)` | P2 §3.8 |
+| Задержка | `tween.tween_interval(0.3)` | P2 §3.8 |

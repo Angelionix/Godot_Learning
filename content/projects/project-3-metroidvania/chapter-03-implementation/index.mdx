@@ -1,0 +1,1435 @@
+---
+title: "Глава 3: Код"
+project: "project-3-metroidvania"
+chapter: "chapter-03-implementation"
+order: 3
+xp: 30
+estimatedTime: 200
+tags: []
+---
+
+
+## 3.1 Настройка проекта
+
+Прежде чем писать код, необходимо правильно настроить проект в Godot Engine. Следуйте этим шагам последовательно — каждый шаг важен для корректной работы всех систем.
+
+**Шаг 1: Создание проекта.** Откройте Godot 4.x, создайте новый проект с именем `MetroidvaniaProject`, выберите Compatibility renderer (достаточно для 2D-игры) и укажите папку проекта. Godot создаст базовую структуру с файлом `project.godot`.
+
+**Шаг 2: Настройка слоёв столкновений.** Откройте Project → Project Settings → Layer Names → 2D Physics и назначьте слои: 1 = `player`, 2 = `terrain`, 3 = `enemies`, 4 = `projectiles`, 5 = `items`, 6 = `triggers`. Это разделение критически важно для Hitbox/Hurtbox системы: Hitbox игрока на слое 1 сталкивается с Hurtbox врагов на слое 3, но не с Hurtbox самого игрока.
+
+**Шаг 3: Настройка Input Map.** Откройте Project → Project Settings → Input Map и добавьте следующие действия: `move_left` (A, Стрелка влево), `move_right` (D, Стрелка вправо), `jump` (Space, W, Стрелка вверх), `attack` (J, ЛКМ), `dash` (K, Shift), `inventory` (I, Tab), `pause` (Escape), `shoot` (L). Используйте и латинские клавиши, и стандартные клавиши со стрелками для удобства.
+
+**Шаг 4: Создание каталогов.** Создайте структуру каталогов, описанную в разделе 2.6. Это можно сделать через файловую систему Godot (вкладка FileSystem) или через операционную систему. Убедитесь, что каждый каталог существует, прежде чем создавать в нём файлы.
+
+**Шаг 5: Регистрация Autoload-ов.** Откройте Project → Project Settings → Autoload и зарегистрируйте менеджеры в следующем порядке: (1) `res://scripts/managers/game_manager.gd` → `GameManager`, (2) `res://scripts/managers/ability_manager.gd` → `AbilityManager`, (3) `res://scripts/managers/inventory_manager.gd` → `InventoryManager`, (4) `res://scripts/managers/scene_manager.gd` → `SceneManager`, (5) `res://scripts/managers/save_manager.gd` → `SaveManager`, (6) `res://scripts/managers/audio_manager.gd` → `AudioManager`. Порядок важен: SceneManager ссылается на GameManager, SaveManager ссылается на все остальные менеджеры.
+
+**Шаг 6: Настройка Audio Bus.** Откройте нижнюю панель Audio и создайте три шины: `Master` (по умолчанию), `SFX` (дочерняя Master), `BGM` (дочерняя Master). Установите SFX и BGM на комфортную громкость (SFX: -6 dB, BGM: -12 dB). Сохраните bus layout как `default_bus_layout.tres`.
+
+## 3.2 Глобальные менеджеры (Autoload)
+
+Глобальные менеджеры — это основа архитектуры метроидвании. Каждый менеджер отвечает за одну область функциональности и предоставляет чёткий API для остальных систем. Все менеджеры реализованы как Autoload, что гарантирует их существование в единственном экземпляре и доступность из любого скрипта через глобальное имя. Менеджеры общаются между собой через сигналы, а не через прямые вызовы, что обеспечивает слабую связанность.
+
+### game_manager.gd
+
+GameManager — центральный менеджер, который отвечает за глобальное состояние игры: паузу, регистрацию игрока и координацию между системами. Это единственный менеджер, который напрямую хранит ссылку на объект Player. Остальные менеджеры получают доступ к игроку через GameManager.player. Важно, что GameManager работает в режиме `PROCESS_MODE_ALWAYS`, чтобы кнопка паузы работала даже когда дерево приостановлено.
+
+```gdscript
+extends Node
+
+signal game_paused(is_paused: bool)
+signal player_died
+
+var is_paused: bool = false
+var player: CharacterBody2D
+
+func _ready() -> void:
+    process_mode = Node.PROCESS_MODE_ALWAYS
+
+func pause_game() -> void:
+    is_paused = true
+    get_tree().paused = true
+    game_paused.emit(true)
+
+func resume_game() -> void:
+    is_paused = false
+    get_tree().paused = false
+    game_paused.emit(false)
+
+func toggle_pause() -> void:
+    if is_paused:
+        resume_game()
+    else:
+        pause_game()
+
+func register_player(p: CharacterBody2D) -> void:
+    player = p
+    player.tree_exiting.connect(func(): player = null)
+
+func _unhandled_input(event: InputEvent) -> void:
+    if event.is_action_pressed("pause"):
+        toggle_pause()
+```
+
+Метод `register_player` вызывается в `_ready()` игрока. Он сохраняет ссылку на Player и подключается к сигналу `tree_exiting`, чтобы обнулить ссылку, когда игрок удаляется из сцены. Без этого подключения обращение к `player` после его удаления вызовет ошибку. Метод `toggle_pause` привязан к кнопке Escape и позволяет ставить игру на паузу из любого состояния.
+
+### ability_manager.gd
+
+AbilityManager управляет разблокировкой способностей и предоставляет метод `has_ability()` для проверки, доступна ли конкретная способность. Словарь `_abilities` использует StringName в качестве ключа и bool в качестве значения — этого достаточно, поскольку нам нужно знать только факт разблокировки. Метод `get_save_data()` возвращает словарь для сериализации, а `load_save_data()` восстанавливает состояние и эмитит сигналы для каждого загруженного ability, чтобы UI и другие системы могли обновиться.
+
+```gdscript
+extends Node
+
+signal ability_unlocked(ability_name: StringName)
+
+var _abilities: Dictionary = {}  # StringName -> bool
+
+func unlock_ability(name: StringName) -> void:
+    if _abilities.has(name):
+        return
+    _abilities[name] = true
+    ability_unlocked.emit(name)
+    print("Способность разблокирована: ", name)
+
+func has_ability(name: StringName) -> bool:
+    return _abilities.get(name, false)
+
+func get_save_data() -> Dictionary:
+    return _abilities.duplicate()
+
+func load_save_data(data: Dictionary) -> void:
+    _abilities = data
+    for ability_name in _abilities:
+        ability_unlocked.emit(StringName(ability_name))
+```
+
+Обратите внимание на проверку `_abilities.has(name)` в `unlock_ability()`: она предотвращает повторную разблокировку и повторную эмить сигнала. Это важно, потому что на сигнале `ability_unlocked` подписан HUD, и повторная эмить привела бы к дублированию индикаторов. При загрузке данных мы эмитим сигналы для каждого ability, чтобы UI обновился — но при этом проверка `_abilities.has()` не сработает, потому что мы уже заполнили словарь до перебора.
+
+### scene_manager.gd
+
+SceneManager управляет переходами между комнатами: выгружает текущую комнату, загружает новую, размещает игрока у точки входа и устанавливает границы камеры. Ключевой момент — FadeOverlay должен быть дочерним узлом SceneManager, а не ссылаться через `$NodeName`, что обеспечивает корректную работу при динамическом перестроении дерева. Переходы анимируются через Tween: сначала затемнение (0.25 сек), затем осветление (0.25 сек), что создаёт плавный эффект.
+
+```gdscript
+extends Node
+
+signal room_changed(room_id: StringName)
+
+var current_room: Node2D
+var _transitioning: bool = false
+var _player: CharacterBody2D
+@onready var _fade: ColorRect = $FadeOverlay
+
+func setup(player: CharacterBody2D) -> void:
+    _player = player
+
+func transition_to(room_path: String, entry_point: StringName = &"default") -> void:
+    if _transitioning:
+        return
+    _transitioning = true
+
+    # Затемнение
+    var tween: Tween = create_tween()
+    tween.tween_property(_fade, "modulate:a", 1.0, 0.25)
+    await tween.finished
+
+    # Выгрузка текущей комнаты
+    if current_room:
+        current_room.queue_free()
+        await get_tree().process_frame  # Ждём удаления
+
+    # Загрузка новой комнаты
+    var room_scene: PackedScene = load(room_path)
+    current_room = room_scene.instantiate()
+    add_child(current_room)
+
+    # Размещение игрока у точки входа
+    var entry_path: String = "EntryPoints/" + str(entry_point)
+    var entry: Marker2D = current_room.get_node_or_null(entry_path)
+    if entry:
+        _player.global_position = entry.global_position
+
+    # Установка границ камеры
+    _setup_camera_limits(current_room)
+
+    # Осветление
+    var tween2: Tween = create_tween()
+    tween2.tween_property(_fade, "modulate:a", 0.0, 0.25)
+    await tween2.finished
+
+    _transitioning = false
+    room_changed.emit(current_room.room_id)
+
+func _setup_camera_limits(room: Node2D) -> void:
+    var limits_node: Node2D = room.get_node_or_null("CameraLimits")
+    if not limits_node:
+        return
+    var top_left: Marker2D = limits_node.get_node_or_null("TopLeft")
+    var bottom_right: Marker2D = limits_node.get_node_or_null("BottomRight")
+    if top_left and bottom_right:
+        _player.camera.limit_left = top_left.global_position.x
+        _player.camera.limit_top = top_left.global_position.y
+        _player.camera.limit_right = bottom_right.global_position.x
+        _player.camera.limit_bottom = bottom_right.global_position.y
+```
+
+Флаг `_transitioning` предотвращает повторный вход в функцию при быстром контакте с несколькими триггерами перехода. `await get_tree().process_frame` гарантирует, что старая комната полностью удалится из дерева перед загрузкой новой. `_setup_camera_limits` ограничивает камеру в пределах комнаты, чтобы игрок не видел пустое пространство за краями уровня. Без этих ограничений камера следовала бы за игроком и показывала незаполненные области.
+
+### inventory_manager.gd
+
+InventoryManager управляет инвентарём игрока: добавление и удаление предметов, проверка наличия, стекирование. Исправление по сравнению с наивной реализацией: поиск существующего предмета для стекирования использует цикл for, а не `find_custom()`, который возвращает индекс, а не сам элемент. Метод `has_item()` использует `Array.any()` с лямбдой для чистой проверки.
+
+```gdscript
+extends Node
+
+signal inventory_changed
+signal item_used(item: ItemData)
+
+var items: Array[ItemData] = []
+var equipment: Dictionary = {}  # slot_name -> ItemData
+var max_slots: int = 20
+
+func add_item(item: ItemData) -> bool:
+    if items.size() >= max_slots:
+        return false
+
+    if item.stackable:
+        var existing: ItemData = null
+        for i in items:
+            if i.id == item.id:
+                existing = i
+                break
+        if existing:
+            existing.quantity += item.quantity
+            inventory_changed.emit()
+            return true
+
+    items.append(item)
+    inventory_changed.emit()
+    return true
+
+func remove_item(item: ItemData, qty: int = 1) -> void:
+    if item.stackable and item.quantity > qty:
+        item.quantity -= qty
+    else:
+        items.erase(item)
+    inventory_changed.emit()
+
+func has_item(item_id: StringName) -> bool:
+    return items.any(func(i): return i.id == item_id)
+
+func use_item(item: ItemData) -> void:
+    if not item in items:
+        return
+    match item.type:
+        ItemData.ItemType.CONSUMABLE:
+            item_used.emit(item)
+            remove_item(item)
+        ItemData.ItemType.KEY:
+            pass  # Ключи используются автоматически при взаимодействии с дверью
+        _:
+            pass
+
+func get_save_data() -> Dictionary:
+    var data: Array = []
+    for item in items:
+        data.append({"id": str(item.id), "quantity": item.quantity})
+    return {"items": data, "equipment": {}}
+
+func load_save_data(data: Dictionary) -> void:
+    items.clear()
+    equipment.clear()
+    # Загрузка предметов из данных (упрощённая — реальная реализация использует ResourceLoader)
+    inventory_changed.emit()
+```
+
+Метод `add_item` проверяет `max_slots` перед добавлением и поддерживает стекирование: если предмет уже есть в инвентаре и он `stackable`, количество увеличивается вместо добавления нового элемента. Метод `remove_item` корректно обрабатывает стекируемые предметы: уменьшает количество, если оно больше запрошенного, иначе удаляет элемент полностью.
+
+### save_manager.gd
+
+SaveManager отвечает за сериализацию всего игрового состояния: позиция и здоровье игрока, инвентарь, разблокированные способности и состояние мира (какие враги убиты, какие предметы собраны, какие двери открыты). Данные сохраняются в JSON-файл `user://save_game.sav`. Методы `mark_enemy_killed`, `mark_item_collected` и `mark_door_opened` вызываются соответствующими объектами при наступлении событий, а методы `is_enemy_killed`, `is_item_collected`, `is_door_opened` — при загрузке комнаты для восстановления состояния.
+
+```gdscript
+extends Node
+
+var world_state: Dictionary = {}  # room_id -> {killed_enemies: [], collected_items: [], opened_doors: []}
+
+func save_game() -> void:
+    var save_data: Dictionary = {
+        "player": {
+            "position_x": GameManager.player.global_position.x,
+            "position_y": GameManager.player.global_position.y,
+            "health": GameManager.player.health,
+            "max_health": GameManager.player.max_health,
+        },
+        "inventory": InventoryManager.get_save_data(),
+        "abilities": AbilityManager.get_save_data(),
+        "world_state": world_state,
+        "current_room": SceneManager.current_room.room_id,
+        "timestamp": Time.get_datetime_string_from_system()
+    }
+    var file: FileAccess = FileAccess.open("user://save_game.sav", FileAccess.WRITE)
+    if file:
+        file.store_string(JSON.stringify(save_data, "\t"))
+        file.close()
+
+func load_game() -> bool:
+    if not FileAccess.file_exists("user://save_game.sav"):
+        return false
+    var file: FileAccess = FileAccess.open("user://save_game.sav", FileAccess.READ)
+    if not file:
+        return false
+    var data: Dictionary = JSON.parse_string(file.get_as_text())
+    file.close()
+    if data.is_empty():
+        return false
+
+    # Восстановление менеджеров
+    AbilityManager.load_save_data(data.get("abilities", {}))
+    InventoryManager.load_save_data(data.get("inventory", {}))
+    world_state = data.get("world_state", {})
+
+    # Загрузка комнаты
+    var room_id: String = str(data.get("current_room", "start"))
+    SceneManager.transition_to("res://scenes/rooms/" + room_id + ".tscn", &"save_point")
+    await SceneManager.room_changed
+
+    # Восстановление игрока
+    if GameManager.player:
+        var player_data: Dictionary = data.get("player", {})
+        GameManager.player.global_position = Vector2(
+            float(player_data.get("position_x", 0)),
+            float(player_data.get("position_y", 0)))
+        GameManager.player.health = int(player_data.get("health", 5))
+        GameManager.player.max_health = int(player_data.get("max_health", 5))
+
+    return true
+
+func mark_enemy_killed(room_id: StringName, enemy_id: String) -> void:
+    if not world_state.has(room_id):
+        world_state[room_id] = {}
+    if not world_state[room_id].has("killed_enemies"):
+        world_state[room_id]["killed_enemies"] = []
+    world_state[room_id]["killed_enemies"].append(enemy_id)
+
+func mark_item_collected(room_id: StringName, item_id: String) -> void:
+    if not world_state.has(room_id):
+        world_state[room_id] = {}
+    if not world_state[room_id].has("collected_items"):
+        world_state[room_id]["collected_items"] = []
+    world_state[room_id]["collected_items"].append(item_id)
+
+func mark_door_opened(room_id: StringName, door_id: String) -> void:
+    if not world_state.has(room_id):
+        world_state[room_id] = {}
+    if not world_state[room_id].has("opened_doors"):
+        world_state[room_id]["opened_doors"] = []
+    world_state[room_id]["opened_doors"].append(door_id)
+
+func is_enemy_killed(room_id: StringName, enemy_id: String) -> bool:
+    var room: Dictionary = world_state.get(room_id, {})
+    return enemy_id in room.get("killed_enemies", [])
+
+func is_item_collected(room_id: StringName, item_id: String) -> bool:
+    var room: Dictionary = world_state.get(room_id, {})
+    return item_id in room.get("collected_items", [])
+
+func is_door_opened(room_id: StringName, door_id: String) -> bool:
+    var room: Dictionary = world_state.get(room_id, {})
+    return door_id in room.get("opened_doors", [])
+```
+
+Структура `world_state` организована иерархически: первый уровень — ID комнаты, второй уровень — категория (killed_enemies, collected_items, opened_doors), третий уровень — массив ID. Это позволяет быстро проверять состояние конкретного объекта в конкретной комнате. При загрузке игры данные восстанавливаются в правильном порядке: сначала способности и инвентарь (они нужны для корректной загрузки комнаты), затем комната (при загрузке комнаты проверяется world_state для восстановления объектов), затем позиция и здоровье игрока.
+
+## 3.3 Data-классы (Resource)
+
+Data-классы — это мост между данными (настраиваемыми в редакторе) и логикой (выполняемой в коде). Все data-классы наследуют Resource и используют @export для открытия свойств в инспекторе. Это позволяет геймдизайнеру создавать .tres-файлы с конкретными параметрами врагов, предметов и способностей, не трогая код. Программист работает с типизированными данными, а не с магическими числами.
+
+### ability_data.gd
+
+AbilityData описывает одну способность: её идентификатор, отображаемое имя, описание, иконку, тип (движение, бой, утилита) и ID комнаты, где она находится. Тип способности используется для классификации в UI, а room_id — для подсказок на мини-карте.
+
+```gdscript
+class_name AbilityData
+extends Resource
+
+enum AbilityType { MOVEMENT, COMBAT, UTILITY }
+
+@export var id: StringName
+@export var display_name: String
+@export var description: String
+@export var icon: Texture2D
+@export var type: AbilityType
+@export var room_id: StringName  # Комната, где находится способность
+```
+
+Пример .tres-файла для двойного прыжка: `id = &"double_jump"`, `display_name = "Двойной прыжок"`, `description = "Позволяет совершить второй прыжок в воздухе"`, `type = MOVEMENT`, `room_id = &"forest_w"`. Создайте по одному .tres-файлу для каждой способности в каталоге `resources/abilities/`.
+
+### item_data.gd
+
+ItemData описывает предмет инвентаря. Поддерживает четыре типа: KEY (ключи для дверей), CONSUMABLE (расходуемые предметы, например зелья здоровья), EQUIPMENT (экипировка, например улучшение меча), UPGRADE (постоянные улучшения, например увеличение max_health). Стекирование управляется флагом `stackable` и лимитом `max_stack`. Словарь `effects` хранит произвольные эффекты предмета: `{"health_restore": 3}` для зелья или `{"max_health": 1}` для улучшения здоровья.
+
+```gdscript
+class_name ItemData
+extends Resource
+
+enum ItemType { KEY, CONSUMABLE, EQUIPMENT, UPGRADE }
+
+@export var id: StringName
+@export var display_name: String
+@export var description: String
+@export var icon: Texture2D
+@export var type: ItemType
+@export var stackable: bool = false
+@export var quantity: int = 1
+@export var max_stack: int = 99
+@export var equipment_slot: StringName = &""
+@export var effects: Dictionary = {}
+```
+
+### enemy_data.gd
+
+EnemyData описывает параметры врага. Каждый тип врага имеет свой .tres-файл с настроенными значениями. Использование Resource вместо захардкоженных констант позволяет легко балансировать игру: достаточно изменить значение в .tres-файле и перезапустить сцену, без перекомпиляции кода. Knockback_force определяет, насколько сильно враг отбрасывает игрока при контакте, а xp_reward — количество опыта (если система опыта будет добавлена позже).
+
+```gdscript
+class_name EnemyData
+extends Resource
+
+@export var id: StringName
+@export var display_name: String
+@export var max_health: int = 2
+@export var damage: int = 1
+@export var move_speed: float = 50.0
+@export var chase_speed: float = 90.0
+@export var patrol_speed: float = 50.0
+@export var detection_range: float = 200.0
+@export var attack_range: float = 50.0
+@export var knockback_force: float = 200.0
+@export var xp_reward: int = 1
+```
+
+## 3.4 Конечный автомат игрока
+
+Конечный автомат (FSM) — это паттерн, который управляет поведением персонажа через чётко определённые состояния и переходы между ними. В нашем проекте FSM реализован как дерево дочерних узлов: каждый State — это отдельный Node, а StateMachine — их контейнер, который переключает текущее состояние по запросу. Это позволяет добавлять новые состояния без изменения существующих и гарантирует, что в каждый момент активно только одно состояние.
+
+### state.gd (базовый класс)
+
+Базовый класс State определяет интерфейс для всех состояний. Методы `enter()` и `exit()` вызываются при переходе в состояние и выходе из него — они используются для инициализации и очистки. Методы `physics_update()` и `update()` вызываются каждый кадр из StateMachine и содержат логику состояния. Сигнал `transition_requested` — это механизм перехода: состояние эмитит его с именем нового состояния, и StateMachine выполняет переход.
+
+```gdscript
+class_name State
+extends Node
+
+signal transition_requested(state_name: StringName)
+
+var character: CharacterBody2D
+
+func enter() -> void:
+    pass
+
+func exit() -> void:
+    pass
+
+func physics_update(_delta: float) -> void:
+    pass
+
+func update(_delta: float) -> void:
+    pass
+```
+
+### player_state.gd
+
+PlayerState расширяет State, добавляя удобные свойства и методы для работы с игроком. Свойство `player` возвращает `character` с приведением типа к Player, а `input_dir` получает текущее направление ввода. Вспомогательные методы `can_attack()`, `can_dash()`, `can_jump()` инкапсулируют проверки, которые повторяются во многих состояниях: наличие ввода, прошёл ли кулдаун, разблокирована ли способность. Метод `apply_gravity()` применяет гравитацию, если игрок не на земле — это используется почти в каждом состоянии.
+
+```gdscript
+class_name PlayerState
+extends State
+
+var player: Player:
+    get: return character as Player
+
+var input_dir: float:
+    get: return Input.get_axis("move_left", "move_right")
+
+func can_attack() -> bool:
+    return Input.is_action_just_pressed("attack") and player.attack_cooldown.is_stopped()
+
+func can_dash() -> bool:
+    return Input.is_action_just_pressed("dash") and AbilityManager.has_ability(&"dash") and player.dash_cooldown.is_stopped()
+
+func can_jump() -> bool:
+    return Input.is_action_just_pressed("jump") and player.jump_count < player.max_jumps
+
+func apply_gravity(delta: float) -> void:
+    if not player.is_on_floor():
+        player.velocity.y += player.gravity * delta
+```
+
+### state_machine.gd
+
+StateMachine — это контейнер для состояний, который управляет переключением между ними. При `_ready()` он собирает все дочерние узлы-состояния в словарь `states` (ключ — имя узла, значение — ссылка на State) и подключает их сигнал `transition_requested` к методу `_on_transition_requested`. Начальное состояние задаётся через @export в инспекторе. В `_physics_process` и `_process` вызываются соответствующие методы текущего состояния.
+
+```gdscript
+extends Node
+
+@export var initial_state: State
+var current_state: State
+var states: Dictionary = {}
+
+func _ready() -> void:
+    for child in get_children():
+        if child is State:
+            states[child.name] = child
+            child.transition_requested.connect(_on_transition_requested)
+    current_state = initial_state
+    current_state.enter()
+
+func _physics_process(delta: float) -> void:
+    if current_state:
+        current_state.physics_update(delta)
+
+func _process(delta: float) -> void:
+    if current_state:
+        current_state.update(delta)
+
+func _on_transition_requested(state_name: StringName) -> void:
+    var new_state: State = states.get(state_name)
+    if new_state and new_state != current_state:
+        current_state.exit()
+        current_state = new_state
+        current_state.enter()
+```
+
+Ключевой момент: проверка `new_state != current_state` предотвращает повторный вход в то же состояние. Это важно, например, для Run: без этой проверки каждый кадр, когда игрок нажимает кнопку движения, состояние перезагружалось бы, сбрасывая анимацию.
+
+### player.gd (основной скрипт игрока)
+
+Скрипт игрока определяет класс Player и содержит все свойства и методы, необходимые для работы FSM. Класс Player является центральным: он хранит здоровье, скорость, направления, ссылки на дочерние узлы и обрабатывает получение урона. Состояния FSM обращаются к свойствам Player через переменную `player`, унаследованную от PlayerState. Важно, что Player не управляет своими состояниями напрямую — это делает StateMachine через сигналы.
+
+```gdscript
+class_name Player
+extends CharacterBody2D
+
+signal health_changed(current: int, maximum: int)
+signal died
+
+@export var run_speed: float = 200.0
+@export var jump_velocity: float = -400.0
+@export var gravity: float = 980.0
+@export var attack_damage: int = 1
+@export var projectile_damage: int = 2
+@export var projectile_scene: PackedScene
+@export var damage_number_scene: PackedScene
+@export var max_health: int = 5:
+    set(value):
+        max_health = value
+        health_changed.emit(health, max_health)
+
+var health: int = 5:
+    set(value):
+        health = clampi(value, 0, max_health)
+        health_changed.emit(health, max_health)
+        if health == 0:
+            died.emit()
+
+var jump_count: int = 0
+var max_jumps: int:
+    get: return 2 if AbilityManager.has_ability(&"double_jump") else 1
+
+var is_hurt: bool = false
+var invincible: bool = false
+var facing_direction: float = 1.0  # 1 = вправо, -1 = влево
+
+@onready var sprite: AnimatedSprite2D = $Sprite2D
+@onready var state_machine: Node = $StateMachine
+@onready var hurtbox: Area2D = $Hurtbox
+@onready var hitbox_pivot: Node2D = $HitboxPivot
+@onready var hitbox: Area2D = $HitboxPivot/Hitbox
+@onready var attack_cooldown: Timer = $HitboxPivot/AttackCooldown
+@onready var dash_cooldown: Timer = $DashCooldown
+@onready var camera: Camera2D = $Camera2D
+@onready var anim_tree: AnimationTree = $AnimationTree
+@onready var projectile_spawn: Marker2D = $ProjectileSpawn
+
+func _ready() -> void:
+    GameManager.register_player(self)
+    hurtbox.area_entered.connect(_on_hurtbox_area_entered)
+    hitbox.area_entered.connect(_on_hitbox_area_entered)
+
+func _physics_process(_delta: float) -> void:
+    if input_dir != 0:
+        facing_direction = signf(input_dir)
+        sprite.flip_h = input_dir < 0
+        hitbox_pivot.scale.x = -1 if input_dir < 0 else 1
+
+func take_damage(amount: int, source_pos: Vector2) -> void:
+    if invincible or is_hurt:
+        return
+    health -= amount
+    apply_knockback(source_pos, 250.0)
+    # Переход через state machine
+    state_machine._on_transition_requested(&"Hurt")
+
+func apply_knockback(source_pos: Vector2, force: float) -> void:
+    var direction: Vector2 = (global_position - source_pos).normalized()
+    velocity = direction * force
+
+func start_invincibility(duration: float = 1.0) -> void:
+    invincible = true
+    # Мигание спрайта
+    var tween: Tween = create_tween()
+    tween.tween_property(sprite, "modulate:a", 0.3, 0.1)
+    tween.tween_property(sprite, "modulate:a", 1.0, 0.1)
+    tween.set_loops(int(duration / 0.2))
+    tween.finished.connect(func(): invincible = false; sprite.modulate.a = 1.0)
+
+func shoot_projectile() -> void:
+    if not AbilityManager.has_ability(&"projectile"):
+        return
+    if not projectile_scene:
+        return
+    var bullet: Area2D = projectile_scene.instantiate()
+    bullet.global_position = projectile_spawn.global_position
+    bullet.direction = Vector2(facing_direction, 0)
+    bullet.damage = projectile_damage
+    get_parent().add_child(bullet)
+    AudioManager.play_sfx("shoot")
+
+func heal_full() -> void:
+    health = max_health
+
+func spawn_damage_number(amount: int, pos: Vector2) -> void:
+    if not damage_number_scene:
+        return
+    var dmg_num: Label = damage_number_scene.instantiate()
+    get_parent().add_child(dmg_num)
+    dmg_num.show_damage(amount, pos)
+
+var input_dir: float:
+    get: return Input.get_axis("move_left", "move_right")
+
+func _on_hurtbox_area_entered(area: Area2D) -> void:
+    if not area.is_in_group("hitbox") or area.get_parent() == self:
+        return
+    var damage: int = area.damage if "damage" in area else 1
+    take_damage(damage, area.global_position)
+
+func _on_hitbox_area_entered(area: Area2D) -> void:
+    if not area.is_in_group("hurtbox"):
+        return
+    var target: Node2D = area.get_parent()
+    if target.has_method("take_damage"):
+        var damage: int = attack_damage
+        target.take_damage(damage, hitbox.global_position)
+        spawn_damage_number(damage, target.global_position)
+```
+
+Setter для `health` использует `clampi`, чтобы здоровье не уходило за пределы [0, max_health], и эмитит сигнал `health_changed` при каждом изменении. Это гарантирует, что HUD всегда актуален, даже если здоровье изменяется из разных мест кода. Проверка `health == 0` внутри setter обеспечивает немедленный переход в состояние Dead, независимо от источника урона.
+
+### Состояния игрока
+
+Ниже приведены все девять состояний FSM игрока. Каждое состояние наследует PlayerState и реализует методы `enter()`, `exit()` и `physics_update()`. Переходы между состояниями происходят через эмит сигнала `transition_requested` — это гарантирует, что переключение всегда идёт через StateMachine, который корректно вызывает `exit()` текущего и `enter()` нового состояния.
+
+#### idle_state.gd
+
+Состояние покоя — базовое состояние, в котором игрок находится на земле без ввода направления. Из Idle можно перейти в Run (при вводе направления), Jump (при нажатии прыжка), Attack (при нажатии атаки), Dash (при нажатии рывка), Fall (при сходе с платформы) или WallSlide (при контакте со стеной в воздухе с разблокированным Wall Jump).
+
+```gdscript
+extends PlayerState
+
+func enter() -> void:
+    player.velocity.x = 0
+
+func physics_update(delta: float) -> void:
+    apply_gravity(delta)
+
+    if can_attack():
+        transition_requested.emit(&"Attack")
+        return
+    if can_dash():
+        transition_requested.emit(&"Dash")
+        return
+    if can_jump() and player.is_on_floor():
+        transition_requested.emit(&"Jump")
+        return
+    if input_dir != 0:
+        transition_requested.emit(&"Run")
+        return
+    if not player.is_on_floor():
+        if _is_on_wall() and AbilityManager.has_ability(&"wall_jump"):
+            transition_requested.emit(&"WallSlide")
+        else:
+            transition_requested.emit(&"Fall")
+        return
+
+    player.move_and_slide()
+
+func _is_on_wall() -> bool:
+    return player.is_on_wall() and input_dir != 0
+```
+
+Порядок проверок важен: атака и рывок проверяются раньше движения, чтобы игрок мог атаковать даже при зажатой клавише движения. Прыжок проверяется раньше Fall, чтобы игрок мог прыгнуть в тот же кадр, когда достиг земли. `move_and_slide()` вызывается в конце, после всех проверок, чтобы применить гравитацию и коллизии.
+
+#### run_state.gd
+
+Состояние бега — игрок движется горизонтально по земле. Горизонтальная скорость устанавливается как `input_dir * run_speed`, а вертикальная — управляется гравитацией. Переходы аналогичны Idle, но вместо перехода в Run при вводе направления мы проверяем отсутствие ввода для перехода в Idle.
+
+```gdscript
+extends PlayerState
+
+func physics_update(delta: float) -> void:
+    apply_gravity(delta)
+    player.velocity.x = input_dir * player.run_speed
+
+    if can_attack():
+        transition_requested.emit(&"Attack")
+    elif can_dash():
+        transition_requested.emit(&"Dash")
+    elif can_jump() and player.is_on_floor():
+        transition_requested.emit(&"Jump")
+    elif input_dir == 0:
+        transition_requested.emit(&"Idle")
+    elif not player.is_on_floor():
+        if player.is_on_wall() and input_dir != 0 and AbilityManager.has_ability(&"wall_jump"):
+            transition_requested.emit(&"WallSlide")
+        else:
+            transition_requested.emit(&"Fall")
+
+    player.move_and_slide()
+```
+
+#### jump_state.gd
+
+Состояние прыжка — игрок находится в воздухе после отрыва от земли. При входе в состояние увеличивается `jump_count` и устанавливается `velocity.y = jump_velocity`. Переменный прыжок реализован через проверку отпускания кнопки: если игрок отпускает кнопку прыжка, пока движется вверх, вертикальная скорость уменьшается вдвое, что позволяет управлять высотой прыжка короткими и длинными нажатиями.
+
+```gdscript
+extends PlayerState
+
+func enter() -> void:
+    player.jump_count += 1
+    player.velocity.y = player.jump_velocity
+
+func physics_update(delta: float) -> void:
+    apply_gravity(delta)
+    player.velocity.x = input_dir * player.run_speed
+
+    # Переменный прыжок (отпускание кнопки уменьшает высоту)
+    if Input.is_action_just_released("jump") and player.velocity.y < 0:
+        player.velocity.y *= 0.5
+
+    if can_dash():
+        transition_requested.emit(&"Dash")
+    elif player.velocity.y > 0:
+        if player.is_on_wall() and input_dir != 0 and AbilityManager.has_ability(&"wall_jump"):
+            transition_requested.emit(&"WallSlide")
+        else:
+            transition_requested.emit(&"Fall")
+    elif player.is_on_floor():
+        player.jump_count = 0
+        if input_dir != 0:
+            transition_requested.emit(&"Run")
+        else:
+            transition_requested.emit(&"Idle")
+
+    player.move_and_slide()
+```
+
+Переменный прыжок — это одна из самых важных деталей платформера. Без него все прыжки будут одинаковой высоты, что делает платформинг менее отзывчивым. Умножение на 0.5 при отпускании кнопки — это эмпирически подобранное значение, которое даёт хороший контроль: короткое нажатие даёт низкий прыжок, длинное — высокий.
+
+#### fall_state.gd
+
+Состояние падения — игрок находится в воздухе и движется вниз. Это состояние активируется, когда игрок сходит с платформы без прыжка (или после пика прыжка). Из Fall можно перейти в Idle/Run (при приземлении), Dash (при нажатии рывка) или WallSlide (при контакте со стеной).
+
+```gdscript
+extends PlayerState
+
+func enter() -> void:
+    pass
+
+func physics_update(delta: float) -> void:
+    apply_gravity(delta)
+    player.velocity.x = input_dir * player.run_speed
+
+    if can_dash():
+        transition_requested.emit(&"Dash")
+    elif player.is_on_floor():
+        player.jump_count = 0
+        if input_dir != 0:
+            transition_requested.emit(&"Run")
+        else:
+            transition_requested.emit(&"Idle")
+    elif player.is_on_wall() and input_dir != 0 and AbilityManager.has_ability(&"wall_jump"):
+        transition_requested.emit(&"WallSlide")
+
+    player.move_and_slide()
+```
+
+#### attack_state.gd
+
+Состояние атаки — игрок выполняет удар ближнего боя. При входе включается Hitbox (CollisionShape2D становится enabled) и запускается кулдаун атаки. Атака длится 0.3 секунды (управляется таймером), после чего Hitbox отключается и происходит переход в следующее состояние. Во время атаки игрок не может двигаться горизонтально, но продолжает подвергаться гравитации — это делает воздушные атаки возможными, но ограниченными.
+
+```gdscript
+extends PlayerState
+
+var _attack_finished: bool = false
+
+func enter() -> void:
+    _attack_finished = false
+    player.velocity.x = 0
+    # Включаем hitbox
+    player.hitbox.get_child(0).disabled = false
+    player.attack_cooldown.start()
+    # Ждём окончания анимации атаки
+    # В реальном проекте используем сигнал AnimationPlayer.animation_finished
+    # Здесь используем таймер для упрощения
+    get_tree().create_timer(0.3).timeout.connect(_on_attack_finished)
+
+func exit() -> void:
+    player.hitbox.get_child(0).disabled = true
+    _attack_finished = false
+
+func physics_update(delta: float) -> void:
+    apply_gravity(delta)
+
+    if _attack_finished:
+        if not player.is_on_floor():
+            transition_requested.emit(&"Fall")
+        elif input_dir != 0:
+            transition_requested.emit(&"Run")
+        else:
+            transition_requested.emit(&"Idle")
+
+    player.move_and_slide()
+
+func _on_attack_finished() -> void:
+    _attack_finished = true
+```
+
+Важный момент: отключение Hitbox происходит в `exit()`, а не по таймеру. Это гарантирует, что Hitbox всегда отключается при выходе из состояния, даже если переход происходит по другой причине (например, игрок получил урон во время атаки). Флаг `_attack_finished` предотвращает преждевременный выход: пока атака не завершена, игрок остаётся в состоянии Attack.
+
+#### dash_state.gd
+
+Состояние рывка — игрок мгновенно перемещается в направлении взгляда. Это критически важная механика для метроидвании, которая позволяет пересекать широкие пропасти и уклоняться от атак. Во время рывка игрок не подвергается гравитации, становится неуязвимым и проходит сквозь врагов (путём снятия слоя коллизий с врагами). После рывка скорость резко снижается (умножение на 0.3), чтобы создать ощущение инерции.
+
+ВАЖНО: Не используйте `set_physics_process(false)` в состоянии Dash — это нарушит работу FSM, потому что `physics_update` перестанет вызываться, и состояние никогда не переключится обратно.
+
+```gdscript
+extends PlayerState
+
+var dash_speed: float = 600.0
+var dash_duration: float = 0.15
+var dash_timer: float = 0.0
+var _original_mask: int
+
+func enter() -> void:
+    dash_timer = dash_duration
+    player.velocity.y = 0
+    player.velocity.x = dash_speed * player.facing_direction
+    # Сохраняем и модифицируем маску коллизий (проходим сквозь врагов)
+    _original_mask = player.collision_mask
+    player.set_collision_mask_value(3, false)  # Слой 3 = враги
+    player.invincible = true
+    player.dash_cooldown.start()
+
+func exit() -> void:
+    player.collision_mask = _original_mask
+    player.velocity.x *= 0.3  # Замедление после рывка
+    player.invincible = false
+
+func physics_update(delta: float) -> void:
+    dash_timer -= delta
+    player.velocity.y = 0  # Без гравитации во время рывка
+
+    if dash_timer <= 0:
+        if player.is_on_floor():
+            transition_requested.emit(&"Idle")
+        else:
+            transition_requested.emit(&"Fall")
+
+    player.move_and_slide()
+```
+
+Сохранение и восстановление `collision_mask` — это чистый способ временно отключить столкновения с врагами. Альтернативный подход — использовать `set_collision_layer_value()` и `set_collision_mask_value()` для отдельных битов, но сохранение полной маски гарантирует, что все биты будут восстановлены корректно, даже если в будущем добавятся новые слои.
+
+#### hurt_state.gd
+
+Состояние получения урона — игрок был атакован и откидывается назад. В этом состоянии горизонтальная скорость постепенно уменьшается (коэффициент 0.9 каждый кадр), имитируя затухание knockback. Длительность состояния — 0.4 секунды, после чего происходит переход в следующее состояние. Если здоровье упало до нуля — переход в Dead. При входе в состояние запускается неуязвимость на 1 секунду.
+
+```gdscript
+extends PlayerState
+
+var hurt_duration: float = 0.4
+var hurt_timer: float = 0.0
+
+func enter() -> void:
+    hurt_timer = hurt_duration
+    player.is_hurt = true
+    player.start_invincibility(1.0)
+
+func exit() -> void:
+    player.is_hurt = false
+
+func physics_update(delta: float) -> void:
+    hurt_timer -= delta
+    # Замедление во время получения урона
+    player.velocity.x *= 0.9
+    apply_gravity(delta)
+
+    if hurt_timer <= 0:
+        if player.health <= 0:
+            transition_requested.emit(&"Dead")
+        elif not player.is_on_floor():
+            transition_requested.emit(&"Fall")
+        elif input_dir != 0:
+            transition_requested.emit(&"Run")
+        else:
+            transition_requested.emit(&"Idle")
+
+    player.move_and_slide()
+```
+
+#### wall_slide_state.gd
+
+Состояние скольжения по стене — игрок медленно скользит вниз по стене, удерживая направление к ней. Это состояние доступно только после разблокировки способности Wall Jump. Во время скольжения вертикальная скорость фиксируется на значении `wall_slide_speed` (50 пикс/сек), что значительно медленнее обычного падения. При нажатии кнопки прыжка выполняется Wall Jump: игрок отталкивается от стены с горизонтальной и вертикальной силой, а `jump_count` устанавливается в 1, что позволяет совершить двойной прыжок после Wall Jump.
+
+```gdscript
+extends PlayerState
+
+var wall_slide_speed: float = 50.0  # Медленное падение
+var wall_jump_force_x: float = 300.0
+var wall_jump_force_y: float = -380.0
+
+func enter() -> void:
+    player.velocity.y = 0
+
+func physics_update(delta: float) -> void:
+    # Замедленное падение вдоль стены
+    if player.velocity.y > 0:
+        player.velocity.y = wall_slide_speed
+
+    # Wall Jump
+    if Input.is_action_just_pressed("jump"):
+        var wall_dir: float = -1 if player.is_on_wall_only() and player.get_wall_normal().x > 0 else 1
+        player.velocity.x = wall_jump_force_x * wall_dir
+        player.velocity.y = wall_jump_force_y
+        player.jump_count = 1  # Для возможности двойного прыжка после wall jump
+        player.facing_direction = wall_dir
+        transition_requested.emit(&"Jump")
+        return
+
+    if can_dash():
+        transition_requested.emit(&"Dash")
+        return
+
+    # Проверяем, всё ещё на стене
+    if not player.is_on_wall() or player.is_on_floor():
+        player.jump_count = 0
+        if player.is_on_floor():
+            if input_dir != 0:
+                transition_requested.emit(&"Run")
+            else:
+                transition_requested.emit(&"Idle")
+        else:
+            transition_requested.emit(&"Fall")
+
+    player.move_and_slide()
+```
+
+Определение направления отталкивания от стены использует `get_wall_normal()`: если нормаль стены направлена вправо (стена слева), игрок отталкивается влево; если нормаль направлена влево (стена справа) — вправо. Это создаёт естественное ощущение отталкивания.
+
+#### dead_state.gd
+
+Состояние смерти — игрок погиб, и игра должна обработать это событие. При входе отключается физическая обработка (`set_physics_process(false)`), эмитится сигнал `player_died`, и через 1.5 секунды вызывается загрузка последнего сохранения. Отключение `_physics_process` здесь допустимо, потому что в состоянии Dead нет переходов — это терминальное состояние, и единственный выход из него — через загрузку сохранения, которая полностью пересоздаёт сцену.
+
+```gdscript
+extends PlayerState
+
+func enter() -> void:
+    player.velocity = Vector2.ZERO
+    player.set_physics_process(false)
+    GameManager.player_died.emit()
+    # Экран смерти
+    get_tree().create_timer(1.5).timeout.connect(_on_death_animation_finished)
+
+func exit() -> void:
+    player.set_physics_process(true)
+
+func physics_update(_delta: float) -> void:
+    pass  # Нет физики в мёртвом состоянии
+
+func _on_death_animation_finished() -> void:
+    # Загрузка последнего сохранения
+    SaveManager.load_game()
+```
+
+## 3.5 Комнаты и уровень
+
+Система комнат — это основа исследования в метроидвании. Каждая комната — это отдельная сцена, которая загружается динамически при переходе игрока. Комната содержит TileMap-слои (фон, террейн, передний план), контейнеры для врагов и предметов, точки входа для размещения игрока и маркеры для ограничения камеры. При загрузке комната проверяет world_state в SaveManager и удаляет уже убитых врагов, собранные предметы и открывает двери.
+
+### room.gd
+
+Скрипт комнаты управляет восстановлением состояния при загрузке. Метод `_restore_state()` вызывается в `_ready()` и проверяет, какие объекты были уже обработаны в предыдущих посещениях этой комнаты. Без этого восстановления враги и предметы появлялись бы заново после каждого перехода, что разрушало бы ощущение прогресса.
+
+```gdscript
+extends Node2D
+
+@export var room_id: StringName
+@export var camera_limits: Rect2
+
+func _ready() -> void:
+    _restore_state()
+
+func _restore_state() -> void:
+    var room_state: Dictionary = SaveManager.world_state.get(room_id, {})
+
+    # Удаляем убитых врагов
+    for enemy_id in room_state.get("killed_enemies", []):
+        var enemy: Node = get_node_or_null("Enemies/" + str(enemy_id))
+        if enemy:
+            enemy.queue_free()
+
+    # Удаляем собранные предметы
+    for item_id in room_state.get("collected_items", []):
+        var item: Node = get_node_or_null("Items/" + str(item_id))
+        if item:
+            item.queue_free()
+
+    # Открываем двери
+    for door_id in room_state.get("opened_doors", []):
+        var door: Node = get_node_or_null("Interactables/" + str(door_id))
+        if door and door.has_method("open"):
+            door.open()
+```
+
+Использование `get_node_or_null` вместо `get_node` предотвращает ошибки, если узел не найден — это возможно, если структура комнаты изменилась после создания сохранения. Каждый враг, предмет и дверь в комнате должны иметь уникальное имя (или свойство id), которое используется как ключ в world_state.
+
+### room_transition.gd
+
+Триггер перехода между комнатами — это Area2D, размещённая на краю комнаты. Когда игрок входит в зону триггера, SceneManager инициирует переход. Если указана `required_ability`, переход происходит только при наличии соответствующей способности — это механизм gated progression, который не позволяет игроку попасть в область, для которой он ещё не готов.
+
+```gdscript
+extends Area2D
+
+@export_file("*.tscn") var target_room: String
+@export var entry_point: StringName = &"default"
+@export var required_ability: StringName = &""  # Пустая = не нужна
+
+func _ready() -> void:
+    body_entered.connect(_on_body_entered)
+
+func _on_body_entered(body: Node2D) -> void:
+    if not body.is_in_group("player"):
+        return
+    if required_ability != &"" and not AbilityManager.has_ability(required_ability):
+        return
+    SceneManager.transition_to(target_room, entry_point)
+```
+
+Аннотация `@export_file("*.tscn")` ограничивает выбор в инспекторе только файлами сцен, что предотвращает ошибки. `entry_point` указывает, какой маркер в целевой комнате использовать для размещения игрока — это позволяет корректно обрабатывать переходы из разных направлений.
+
+## 3.6 Враги
+
+Система врагов строится на базовом скрипте enemy_base.gd, который реализует конечный автомат с пятью состояниями: PATROL, CHASE, ATTACK, HURT, DEAD. Конкретные типы врагов (слизень, летучая мышь, рыцарь, лучник) наследуют этот скрипт и переопределяют методы состояний для реализации уникального поведения. Параметры врагов (HP, урон, скорость, дальность обнаружения) хранятся в EnemyData Resource и настраиваются в инспекторе.
+
+### enemy_base.gd
+
+Базовый скрипт врага реализует FSM на основе enum и match, что проще, чем узловой подход, использованный для игрока. Это оправдано, потому что враги имеют меньше состояний и менее сложную логику переходов. Каждый враг получает ссылку на игрока через GameManager.player и использует её для определения расстояния и направления преследования.
+
+```gdscript
+extends CharacterBody2D
+
+signal died(enemy_id: String)
+
+@export var data: EnemyData
+@export var enemy_id: String = ""
+
+enum State { PATROL, CHASE, ATTACK, HURT, DEAD }
+
+var current_state: State = State.PATROL
+var health: int = 2
+var patrol_direction: float = 1.0
+var _player: Node2D
+var _gravity: float = 980.0
+var _hurt_timer: float = 0.0
+
+func _ready() -> void:
+    if data:
+        health = data.max_health
+    _player = GameManager.player
+
+func _physics_process(delta: float) -> void:
+    if not _player and GameManager.player:
+        _player = GameManager.player
+
+    match current_state:
+        State.PATROL: _patrol(delta)
+        State.CHASE: _chase(delta)
+        State.ATTACK: _attack(delta)
+        State.HURT: _hurt(delta)
+        State.DEAD: return
+
+    move_and_slide()
+
+func _patrol(delta: float) -> void:
+    var speed: float = data.patrol_speed if data else 50.0
+    velocity.x = speed * patrol_direction
+    velocity.y += _gravity * delta
+
+    if not is_on_floor() or is_on_wall():
+        patrol_direction *= -1
+
+    var detect_range: float = data.detection_range if data else 200.0
+    if _player and global_position.distance_to(_player.global_position) < detect_range:
+        current_state = State.CHASE
+
+func _chase(delta: float) -> void:
+    if not _player:
+        current_state = State.PATROL
+        return
+    var chase_speed: float = data.chase_speed if data else 90.0
+    var dir: float = signf(_player.global_position.x - global_position.x)
+    velocity.x = chase_speed * dir
+    velocity.y += _gravity * delta
+
+    var dist: float = global_position.distance_to(_player.global_position)
+    var detect_range: float = data.detection_range if data else 200.0
+    var attack_range: float = data.attack_range if data else 50.0
+    if dist > detect_range * 1.5:
+        current_state = State.PATROL
+    elif dist < attack_range:
+        current_state = State.ATTACK
+
+func _attack(_delta: float) -> void:
+    # Враг атакует — урон наносится через hitbox/hurtbox
+    # После атаки возвращаемся к преследованию
+    current_state = State.CHASE
+
+func _hurt(delta: float) -> void:
+    _hurt_timer -= delta
+    velocity.x *= 0.9
+    velocity.y += _gravity * delta
+    if _hurt_timer <= 0:
+        if health <= 0:
+            current_state = State.DEAD
+            _on_death()
+        else:
+            current_state = State.CHASE
+
+func _on_death() -> void:
+    # Определяем room_id через дерево сцены
+    var room: Node2D = get_parent().get_parent() as Node2D
+    if room and room.has_method("get"):
+        SaveManager.mark_enemy_killed(room.room_id, enemy_id)
+    died.emit(enemy_id)
+    queue_free()
+
+func take_damage(amount: int, source_pos: Vector2) -> void:
+    health -= amount
+    var knockback_dir: Vector2 = (global_position - source_pos).normalized()
+    var knockback_force: float = data.knockback_force if data else 200.0
+    velocity = knockback_dir * knockback_force
+    _hurt_timer = 0.3
+    current_state = State.HURT
+```
+
+## 3.7 Боевая система
+
+Боевая система реализована через компоненты Hitbox и Hurtbox, которые являются Area2D с соответствующими группами. Это разделение позволяет одному объекту иметь как зону атаки, так и зону уязвимости, и управлять ими независимо. Hitbox активируется только во время атаки (CollisionShape2D.disabled = false), а Hurtbox всегда активна.
+
+### hitbox.gd
+
+Hitbox — это Area2D, которая наносит урон при пересечении с Hurtbox. По умолчанию CollisionShape2D отключён, чтобы предотвратить постоянный урон. Hitbox добавляется в группу `"hitbox"` для идентификации в скриптах Hurtbox.
+
+```gdscript
+extends Area2D
+
+@export var damage: int = 1
+
+func _ready() -> void:
+    # Добавляем в группу для идентификации
+    add_to_group("hitbox")
+    # Отключаем collision shape по умолчанию
+    for child in get_children():
+        if child is CollisionShape2D:
+            child.disabled = true
+```
+
+### hurtbox.gd
+
+Hurtbox — это Area2D, которая принимает урон от Hitbox. Она добавляется в группу `"hurtbox"` для идентификации. Hurtbox не содержит логики урона — она лишь является «мишенью». Логика обработки пересечения реализована в скриптах персонажа и врагов через сигнал `area_entered`.
+
+```gdscript
+extends Area2D
+
+func _ready() -> void:
+    add_to_group("hurtbox")
+```
+
+### damage_number.gd
+
+Всплывающее число урона — это Label, который появляется над целью при получении урона, поднимается вверх и затухает. Число создаётся как экземпляр сцены, позиционируется рядом с целью и анимируется через Tween. Это даёт моментальную визуальную обратную связь о том, сколько урона было нанесено.
+
+```gdscript
+extends Label
+
+var _velocity: Vector2 = Vector2.ZERO
+
+func show_damage(amount: int, pos: Vector2) -> void:
+    text = str(amount)
+    global_position = pos + Vector2(randf_range(-10, 10), -10)
+    _velocity = Vector2(randf_range(-30, 30), -80)
+    var tween: Tween = create_tween()
+    tween.tween_property(self, "modulate:a", 0.0, 0.8)
+    tween.tween_callback(queue_free)
+
+func _process(delta: float) -> void:
+    _velocity.y += 200 * delta
+    position += _velocity * delta
+```
+
+Случайное смещение позиции (`randf_range(-10, 10)`) и случайная горизонтальная скорость (`randf_range(-30, 30)`) предотвращают наложение чисел друг на друга при серии быстрых ударов. Затухание через 0.8 секунды — достаточное время, чтобы игрок успел прочитать число, но не настолько длинное, чтобы числа накапливались на экране.
+
+### projectile.gd
+
+Снаряд — это Area2D, который летит в заданном направлении и наносит урон при столкновении с Hurtbox. После столкновения или по истечении времени жизни снаряд уничтожается. Снаряды создаются динамически через `PackedScene.instantiate()` при вызове `player.shoot_projectile()`.
+
+```gdscript
+extends Area2D
+
+var direction: Vector2 = Vector2.RIGHT
+var damage: int = 2
+var speed: float = 400.0
+var lifetime: float = 3.0
+
+func _ready() -> void:
+    add_to_group("hitbox")
+    # Автоуничтожение по истечении времени жизни
+    get_tree().create_timer(lifetime).timeout.connect(queue_free)
+
+func _physics_process(delta: float) -> void:
+    position += direction * speed * delta
+
+func _on_area_entered(area: Area2D) -> void:
+    if area.is_in_group("hurtbox"):
+        var target: Node2D = area.get_parent()
+        if target.has_method("take_damage"):
+            target.take_damage(damage, global_position)
+        queue_free()
+
+func _on_body_entered(_body: Node2D) -> void:
+    # Столкновение с террейном
+    queue_free()
+```
+
+## 3.8 Способности и предметы
+
+Способности и предметы — это ключевые элементы прогрессии в метроидвании. Способности разблокируют новые механики (двойной прыжок, рывок, атака снарядами, Wall Jump), а предметы предоставляют ресурсы (зелья здоровья, ключи, улучшения). Оба типа объектов реализованы как Area2D-триггеры, которые реагируют на вход игрока.
+
+### ability_pickup.gd
+
+Подбор способности — это Area2D, которая при контакте с игроком разблокирует способность через AbilityManager, отмечает факт подбора в SaveManager и уничтожается. Проверка `AbilityManager.has_ability()` предотвращает повторную разблокировку, если игрок каким-то образом вернётся к тому же артефакту.
+
+```gdscript
+extends Area2D
+
+@export var ability_id: StringName
+@export var ability_name: String
+
+func _ready() -> void:
+    body_entered.connect(_on_body_entered)
+
+func _on_body_entered(body: Node2D) -> void:
+    if not body.is_in_group("player"):
+        return
+    if AbilityManager.has_ability(ability_id):
+        return
+
+    AbilityManager.unlock_ability(ability_id)
+    # Определяем room_id через дерево сцены
+    var room: Node2D = get_parent().get_parent() as Node2D
+    if room:
+        SaveManager.mark_item_collected(room.room_id, "ability_" + str(ability_id))
+    AudioManager.play_sfx("ability_unlock")
+    queue_free()
+```
+
+### item_pickup.gd
+
+Подбор предмета обрабатывает четыре типа предметов: CONSUMABLE (применяет эффект немедленно, например восстанавливает здоровье), KEY (добавляет в инвентарь для последующего использования), UPGRADE (постоянно улучшает параметр игрока, например max_health), EQUIPMENT (добавляет в инвентарь для экипировки). Каждый тип обрабатывается в блоке match, что позволяет легко добавлять новые типы в будущем.
+
+```gdscript
+extends Area2D
+
+@export var item_data: ItemData
+@export var pickup_id: String = ""
+
+func _ready() -> void:
+    body_entered.connect(_on_body_entered)
+
+func _on_body_entered(body: Node2D) -> void:
+    if not body.is_in_group("player"):
+        return
+
+    if item_data:
+        match item_data.type:
+            ItemData.ItemType.CONSUMABLE:
+                # Применяем эффект
+                if item_data.effects.has("health_restore"):
+                    body.health += int(item_data.effects["health_restore"])
+            ItemData.ItemType.KEY:
+                InventoryManager.add_item(item_data)
+            ItemData.ItemType.UPGRADE:
+                if item_data.effects.has("max_health"):
+                    body.max_health += int(item_data.effects["max_health"])
+                    body.health = body.max_health
+            ItemData.ItemType.EQUIPMENT:
+                InventoryManager.add_item(item_data)
+
+    if pickup_id != "":
+        var room: Node2D = get_parent().get_parent() as Node2D
+        if room:
+            SaveManager.mark_item_collected(room.room_id, pickup_id)
+
+    AudioManager.play_sfx("item_pickup")
+    queue_free()
+```
+
+### save_point.gd
+
+Точка сохранения — это Area2D, которая при контакте с игроком полностью восстанавливает здоровье и сохраняет игру. Точка сохранения визуально реагирует на активацию (анимация свечения) и воспроизводит характерный звук. При последующих контактах точка сохранения снова активируется — это позволяет игроку сохраняться неоднократно.
+
+```gdscript
+extends Area2D
+
+var activated: bool = false
+
+func _ready() -> void:
+    body_entered.connect(_on_body_entered)
+
+func _on_body_entered(body: Node2D) -> void:
+    if not body.is_in_group("player"):
+        return
+
+    activated = true
+    body.heal_full()
+    SaveManager.save_game()
+    # Анимация активации (требует AnimationPlayer "GlowAnimation" в сцене)
+    if has_node("GlowAnimation"):
+        $GlowAnimation.play("activate")
+    AudioManager.play_sfx("save_point")
+```
+
+## 3.9 Инвентарь UI
+
+Интерфейс инвентаря отображает список собранных предметов в виде сетки иконок. Инвентарь открывается и закрывается кнопкой I (или Tab), при этом игра ставится на паузу. Сетка пересоздаётся при каждом изменении инвентаря (сигнал `inventory_changed`), что гарантирует актуальность отображения. Каждая иконка имеет всплывающую подсказку с именем и описанием предмета.
+
+### inventory_ui.gd
+
+```gdscript
+extends CanvasLayer
+
+@onready var grid: GridContainer = $Panel/MarginContainer/VBoxContainer/ItemGrid
+
+func _ready() -> void:
+    InventoryManager.inventory_changed.connect(_refresh)
+    visible = false
+
+func _unhandled_input(event: InputEvent) -> void:
+    if event.is_action_pressed("inventory"):
+        visible = not visible
+        get_tree().paused = visible
+
+func _refresh() -> void:
+    # Очищаем и пересоздаём слоты
+    for child in grid.get_children():
+        child.queue_free()
+    for item in InventoryManager.items:
+        var slot: TextureButton = TextureButton.new()
+        slot.texture_normal = item.icon
+        slot.tooltip_text = item.display_name + "\n" + item.description
+        slot.pressed.connect(_on_slot_pressed.bind(item))
+        grid.add_child(slot)
+
+func _on_slot_pressed(item: ItemData) -> void:
+    InventoryManager.use_item(item)
+```
+
+Метод `_refresh` полностью перестраивает сетку при каждом изменении. Это не самый эффективный подход для больших инвентарей, но для нашего проекта (максимум 20 слотов) он более чем достаточен и значительно проще в реализации, чем инкрементальное обновление. Подключение сигнала `pressed` к `_on_slot_pressed` позволяет использовать предмет нажатием на иконку.
+
+## 3.10 HUD
+
+HUD (Heads-Up Display) — это постоянный интерфейс, отображающий текущее здоровье, индикаторы разблокированных способностей и другую полезную информацию. HUD реализован как CanvasLayer, что гарантирует его отображение поверх игровой сцены независимо от позиции камеры. HUD обновляется реактивно — через сигналы, а не через опрос каждый кадр.
+
+### hud.gd
+
+```gdscript
+extends CanvasLayer
+
+@onready var health_bar: TextureProgressBar = $MarginContainer/HBoxContainer/HealthBar
+@onready var health_label: Label = $MarginContainer/HBoxContainer/HealthLabel
+@onready var ability_indicator: HBoxContainer = $MarginContainer/HBoxContainer/AbilityIndicator
+
+func _ready() -> void:
+    # Подключаемся к сигналам игрока
+    if GameManager.player:
+        _connect_player_signals()
+    else:
+        # Если игрок ещё не зарегистрирован, ждём
+        await get_tree().process_frame
+        if GameManager.player:
+            _connect_player_signals()
+
+    AbilityManager.ability_unlocked.connect(_on_ability_unlocked)
+
+func _connect_player_signals() -> void:
+    GameManager.player.health_changed.connect(_on_health_changed)
+    # Инициализируем отображение
+    _on_health_changed(GameManager.player.health, GameManager.player.max_health)
+
+func _on_health_changed(current: int, maximum: int) -> void:
+    health_label.text = "%d / %d" % [current, maximum]
+    if health_bar:
+        health_bar.value = (float(current) / float(maximum)) * 100.0
+
+func _on_ability_unlocked(ability_name: StringName) -> void:
+    # Показываем индикатор разблокированной способности
+    var label: Label = Label.new()
+    label.text = str(ability_name)
+    label.add_theme_color_override("font_color", Color.GOLD)
+    ability_indicator.add_child(label)
+```
+
+## 3.11 TileMap и метаданные
+
+TileMap — это основной инструмент для построения уровней в Godot 4.x. В нашем проекте каждая комната использует три TileMapLayer: Background (z_index: -2), Terrain (z_index: 0, с коллизией) и Foreground (z_index: 2). Такое разделение позволяет создавать глубину: фоновые элементы за игроком, основной террейн с коллизией и декоративные элементы перед игроком.
+
+**Настройка TileSet:** Для каждого биома создаётся отдельный TileSet-ресурс с уникальным набором тайлов и физическими слоями. В TileSet Editor нужно настроить: (1) физический слой для Terrain — это определяет, где игрок может стоять, (2) однонаправленные платформы — тайлы, через которые можно прыгнуть снизу, но которые блокируют падение сверху, (3) custom data — метаданные тайлов для определения разрушаемых стен и интерактивных элементов.
+
+**Однонаправленные платформы** реализуются через свойство TileSet physics layer `one_way`. Когда это свойство включено, коллизия платформы работает только сверху. Это позволяет игроку прыгать через платформу снизу и стоять на ней сверху, что критически важно для вертикального платформинга в метроидвании.
+
+**Custom Data для разрушаемых стен:** В TileSet Editor добавьте custom data layer с именем `"destructible"` типа bool. Тайлы разрушаемых стен помечаются как `destructible = true`. В игре, когда снаряд попадает в такой тайл, вызывается метод, который удаляет тайл из TileMapLayer:
+
+```gdscript
+func destroy_tile_at(layer: TileMapLayer, pos: Vector2) -> void:
+    var coords: Vector2i = layer.local_to_map(pos)
+    var data: TileData = layer.get_tile_tile_data(coords)
+    if data and data.get_custom_data("destructible"):
+        layer.set_cell(coords, -1)  # Удаляем тайл
+        AudioManager.play_sfx("wall_break")
+```
+
+Этот подход элегантно интегрирует данные уровня с геймплеем: геймдизайнер просто помечает нужные тайлы в редакторе, а код автоматически обрабатывает их при попадании снаряда. Никаких дополнительных нод или триггеров не требуется.
+
+## 3.12 AnimationTree
+
+AnimationTree — это мощный инструмент Godot для управления анимациями на основе параметров. Вместо ручного переключения анимаций через код, AnimationTree позволяет создавать граф переходов, где анимации переключаются автоматически на основе условий. В нашем проекте AnimationTree управляет анимациями игрока: idle, run, jump, fall, attack, dash, hurt, wall_slide, dead.
+
+**Настройка AnimationTree:**
+
+1. Добавьте AnimationPlayer в сцену игрока и создайте все анимации (idle, run, jump_start, jump_loop, fall, attack, dash, hurt, wall_slide, death)
+2. Добавьте AnimationTree и укажите ссылку на AnimationPlayer в свойстве `tree_root`
+3. Выберите тип дерева `AnimationNodeStateMachine` — это позволяет создавать граф переходов между анимациями
+4. Добавьте узлы-состояния для каждой анимации и соедините их переходами
+5. Настройте условия переходов: `velocity_length > 0.1` для idle→run, `is_on_floor == false` для idle→fall, `is_attacking == true` для idle→attack
+
+**Управление параметрами из кода:**
+
+```gdscript

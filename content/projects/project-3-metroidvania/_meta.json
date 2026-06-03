@@ -1,0 +1,58 @@
+{
+  "title": "Метроидвания",
+  "projectSlug": "project-3-metroidvania",
+  "order": 3,
+  "difficulty": "⭐⭐⭐ Средний",
+  "language": "GDScript",
+  "description": "Создайте 2D Метроидванию с исследованием мира, FSM для персонажа, способностями, инвентарём и боссом.",
+  "tags": [
+    "FSM",
+    "AnimationTree",
+    "Исследование",
+    "Способности",
+    "Инвентарь",
+    "TileMap",
+    "Босс"
+  ],
+  "chapters": [
+    {
+      "slug": "introduction",
+      "title": "Введение",
+      "order": 0,
+      "xp": 5,
+      "estimatedTime": 15
+    },
+    {
+      "slug": "chapter-01-game-design",
+      "title": "Глава 1: Геймдизайн",
+      "order": 1,
+      "xp": 15,
+      "estimatedTime": 50
+    },
+    {
+      "slug": "chapter-02-architecture",
+      "title": "Глава 2: Архитектура",
+      "order": 2,
+      "xp": 15,
+      "estimatedTime": 45
+    },
+    {
+      "slug": "chapter-03-implementation",
+      "title": "Глава 3: Код",
+      "order": 3,
+      "xp": 30,
+      "estimatedTime": 200
+    }
+  ],
+  "cheatSheet": "cheat-sheet.mdx",
+  "sprint": {
+    "slug": "sprint",
+    "title": "Финальный спринт: Своя Метроидвания",
+    "order": 99,
+    "xp": 100
+  },
+  "bridge": {
+    "nextProject": "project-4-tower-defense",
+    "nextTitle": "Tower Defense"
+  }
+}

@@ -1,0 +1,60 @@
+---
+title: "Шпаргалка: GDExtension Setup Guide"
+project: "project-4-tower-defense"
+chapter: "cheat-sheet"
+order: 98
+xp: 0
+estimatedTime: 0
+tags: []
+type: "cheat-sheet"
+---
+
+### Настройка среды C++
+| Шаг | Команда / Действие | Раздел |
+|---|---|---|
+| Установить Python 3 | `python3 --version` (3.6+) | P4 §3.4 |
+| Установить SCons | `pip install scons` (4.0+) | P4 §3.4 |
+| Клонировать godot-cpp | `git clone https://github.com/godotengine/godot-cpp` | P4 §3.4 |
+| Компиляция | `scons platform=windows target=template_debug` | P4 §3.4 |
+
+### Файл .gdextension
+| Поле | Описание | Раздел |
+|---|---|---|
+| entry_symbol | `gdextension_init` — точка входа | P4 §3.4 |
+| libraries | Путь к .dll/.so по платформам | P4 §3.4 |
+| dependencies | Список зависимостей (библиотеки) | P4 §3.4 |
+| reloadable | `true` для горячей перезагрузки в редакторе | P4 §3.4 |
+
+### Биндинги C++ (ClassDB)
+| Действие | Код | Раздел |
+|---|---|---|
+| Регистрация класса | `ClassDB::bind_method(D_METHOD("find_path", "from", "to"), &PathFinder::find_path)` | P4 §3.5 |
+| Свойство | `ADD_PROPERTY(PropertyInfo(Variant::INT, "cell_size"), "set_cell_size", "get_cell_size")` | P4 §3.5 |
+| Сигнал | `ADD_SIGNAL(MethodInfo("path_found", PropertyInfo(Variant::ARRAY, "path")))` | P4 §3.5 |
+| exposeToScript | `_bind_methods()` — статический метод, вызывается при регистрации | P4 §3.5 |
+
+### Бенчмарки C++ vs GDScript
+| Операция | GDScript | C++ | Ускорение | Раздел |
+|---|---|---|---|---|
+| A* Pathfinding (100 врагов) | 28 мс | 1.1 мс | 26× | P4 §3.5 |
+| Projectile Simulation (200 снарядов) | 15 мс | 0.8 мс | 19× | P4 §3.6 |
+| Общее ускорение при гибридной архитектуре | — | — | 20–26× | P4 §3.5 |
+
+### NavigationRegion2D
+| Действие | Настройка | Раздел |
+|---|---|---|
+| Создать регион | Add Node → NavigationRegion2D | P4 §2.1 |
+| Нарисовать полигон | В редакторе: рисование навигационной сетки | P4 §2.1 |
+| NavigationAgent2D | Добавить врагу, задать target_position | P4 §3.3 |
+| Обход препятствий | NavigationLink2D для «прыжков» через стены | P4 §3.3 |
+| Пересчёт пути | `agent.get_next_path_position()` каждый кадр | P4 §3.3 |
+
+### Strategy Pattern (TargetStrategy)
+| Стратегия | Логика | Раздел |
+|---|---|---|
+| First | `enemies[0]` — ближайший к финишу | P4 §2.5 |
+| Last | `enemies[-1]` — ближайший к старту | P4 §2.5 |
+| Strongest | `enemies.max_by(func(e): return e.health)` | P4 §2.5 |
+| Применение | `match target_strategy: TargetStrategy.FIRST: ...` | P4 §2.5 |
+
+---

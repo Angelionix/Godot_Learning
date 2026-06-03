@@ -1,0 +1,80 @@
+---
+title: "Шпаргалка: Performance Optimization Checklist"
+project: "project-6-performance-demo"
+chapter: "cheat-sheet"
+order: 98
+xp: 0
+estimatedTime: 0
+tags: []
+type: "cheat-sheet"
+---
+
+### ECS (Entity-Component-System)
+| Концепция | Описание | Раздел |
+|---|---|---|
+| Entity | ID (целое число), не содержит данных | P6 §2.1 |
+| Component | Структура данных (Position, Velocity, Health) | P6 §2.1 |
+| System | Логика обработки компонентов (MoveSystem, CombatSystem) | P6 §2.1 |
+| Registry | Центральный контейнер: `Registry.create()`, `Registry.emplace<T>()` | P6 §3.2 |
+| Archetype | Набор компонентов для быстрого запроса | P6 §2.1 |
+
+### Data Locality (SoA vs AoS)
+| Паттерн | Описание | Раздел |
+|---|---|---|
+| AoS (Array of Structures) | `struct Unit { pos, vel, hp; }; Unit units[N]` — плохо для кэша | P6 §1.5 |
+| SoA (Structure of Arrays) | `float pos_x[N], pos_y[N], vel_x[N]...` — хорошо для кэша | P6 §1.5 |
+| Размер сущности | 104 байта при SoA, ~200+ при AoS | P6 §2.1 |
+| L3 Cache | 10K сущностей × 104B = 1MB — помещается в L3 | P6 §1.5 |
+
+### Job System (Многопоточность)
+| Действие | Код | Раздел |
+|---|---|---|
+| Создать пул | `ThreadPool(8)` — по числу ядер | P6 §3.3 |
+| Отправить задачу | `pool.enqueue([](int start, int end){ update_units(start, end); })` | P6 §3.3 |
+| Ожидание | `pool.wait_all()` — барьер синхронизации | P6 §3.3 |
+| Бюджет кадра | 16.67 мс (60 FPS), из которых 4.2 мс — логика (65% headroom) | P6 §1.4 |
+
+### Compute-шейдеры (RenderingDevice)
+| Действие | Код | Раздел |
+|---|---|---|
+| Создать shader | `RenderingDevice.get_singleton().shader_create_from_spirv(spirv)` | P6 §3.4 |
+| Uniform buffer | `rd.uniform_buffer_create(size, data)` — передача данных | P6 §3.4 |
+| Compute list | `rd.compute_list_begin(); rd.compute_list_bind_shader(...); rd.compute_list_dispatch(...)` | P6 §3.4 |
+| GPU→CPU | `rd.buffer_get_data(buffer)` — чтение обратно | P6 §3.4 |
+
+### MultiMesh (Инстансированный рендеринг)
+| Действие | Код | Раздел |
+|---|---|---|
+| Создать | `MultiMeshInstance3D` + `MultiMesh` ресурс | P6 §3.5 |
+| Настройка | `multimesh.mesh = mesh; multimesh.instance_count = 10000` | P6 §3.5 |
+| Обновить позицию | `multimesh.set_instance_transform(i, Transform3D(...))` | P6 §3.5 |
+| Результат | 3 draw calls вместо 10K MeshInstance3D | P6 §3.5 |
+
+### Frustum Culling + LOD
+| Уровень | Треугольники | Расстояние | Раздел |
+|---|---|---|---|
+| LOD0 | 500 | 0–50 м | P6 §3.5 |
+| LOD1 | 100 | 50–150 м | P6 §3.5 |
+| LOD2 | 2 (биллборд) | 150+ м | P6 §3.5 |
+| Frustum check | `camera.is_position_in_frustum(pos)` | C++ | P6 §3.5 |
+| 3 MultiMesh пула | По одному на каждый LOD уровень | P6 §3.5 |
+
+### Кастомные аллокаторы
+| Аллокатор | Назначение | Раздел |
+|---|---|---|
+| PoolAllocator | Предварительное выделение 50K слотов сущностей | P6 §3.6 |
+| ArenaAllocator | Временные данные в рамках кадра, сброс = O(1) | P6 §3.6 |
+| Результат | 0 аллокаций в game loop — всё из пулов | P6 §3.6 |
+
+### Прогрессия оптимизации
+| Шаг | Оптимизация | FPS (10K) | Раздел |
+|---|---|---|---|
+| 0 | GDScript + MeshInstance3D | 2 FPS | P6 §1.3 |
+| 1 | C++ + MeshInstance3D | 15 FPS | P6 §1.3 |
+| 2 | C++ + MultiMesh | 40 FPS | P6 §3.5 |
+| 3 | C++ + Job System | 90 FPS | P6 §3.3 |
+| 4 | C++ + Compute Shaders | 150 FPS | P6 §3.4 |
+| 5 | Полная оптимизация | 238 FPS | P6 §1.3 |
+| **Итого** | **GDScript → C++ + ECS + Data Locality** | **119× ускорение** | P6 §1.3 |
+
+---

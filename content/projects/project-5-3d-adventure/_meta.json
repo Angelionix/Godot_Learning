@@ -1,0 +1,58 @@
+{
+  "title": "3D Приключение",
+  "projectSlug": "project-5-3d-adventure",
+  "order": 5,
+  "difficulty": "⭐⭐⭐⭐⭐ Продвинутый+",
+  "language": "C++ + GDScript",
+  "description": "Создайте 3D приключение с навигацией, NPC, диалогами, квестами, инвентарём и циклом дня и ночи на C++ и GDScript.",
+  "tags": [
+    "3D",
+    "Navigation3D",
+    "Диалоги",
+    "Квесты",
+    "Инвентарь",
+    "C++",
+    "Цикл дня"
+  ],
+  "chapters": [
+    {
+      "slug": "introduction",
+      "title": "Введение",
+      "order": 0,
+      "xp": 5,
+      "estimatedTime": 10
+    },
+    {
+      "slug": "chapter-01-game-design",
+      "title": "Глава 1: Геймдизайн",
+      "order": 1,
+      "xp": 15,
+      "estimatedTime": 55
+    },
+    {
+      "slug": "chapter-02-architecture",
+      "title": "Глава 2: Архитектура",
+      "order": 2,
+      "xp": 15,
+      "estimatedTime": 45
+    },
+    {
+      "slug": "chapter-03-implementation",
+      "title": "Глава 3: Код и верификация",
+      "order": 3,
+      "xp": 30,
+      "estimatedTime": 220
+    }
+  ],
+  "cheatSheet": "cheat-sheet.mdx",
+  "sprint": {
+    "slug": "sprint",
+    "title": "Финальный спринт: Свой квест",
+    "order": 99,
+    "xp": 100
+  },
+  "bridge": {
+    "nextProject": "project-6-performance-demo",
+    "nextTitle": "Демо производительности"
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "title": "Космический шутер",
+  "projectSlug": "project-2-space-shooter",
+  "order": 2,
+  "difficulty": "⭐⭐ Продвинутый новичок",
+  "language": "GDScript",
+  "description": "Создайте 2D космический шутер с вертикальной прокруткой: волны врагов, босс с фазами, Object Pool, шейдеры и система комбо.",
+  "tags": [
+    "Физика 2D",
+    "Столкновения",
+    "Пули",
+    "Враги",
+    "Object Pool",
+    "Шейдеры",
+    "Волны"
+  ],
+  "chapters": [
+    {
+      "slug": "introduction",
+      "title": "Введение",
+      "order": 0,
+      "xp": 5,
+      "estimatedTime": 10
+    },
+    {
+      "slug": "chapter-01-game-design",
+      "title": "Глава 1: Геймдизайн",
+      "order": 1,
+      "xp": 15,
+      "estimatedTime": 45
+    },
+    {
+      "slug": "chapter-02-architecture",
+      "title": "Глава 2: Архитектура",
+      "order": 2,
+      "xp": 15,
+      "estimatedTime": 40
+    },
+    {
+      "slug": "chapter-03-project-setup",
+      "title": "Глава 3: Настройка проекта",
+      "order": 3,
+      "xp": 10,
+      "estimatedTime": 20
+    },
+    {
+      "slug": "chapter-04-physics-basics",
+      "title": "Глава 4: Основы 2D-физики Godot",
+      "order": 4,
+      "xp": 15,
+      "estimatedTime": 30
+    },
+    {
+      "slug": "chapter-05-implementation",
+      "title": "Глава 5: Реализация",
+      "order": 5,
+      "xp": 25,
+      "estimatedTime": 180
+    },
+    {
+      "slug": "chapter-06-shaders-vfx",
+      "title": "Глава 6: Шейдеры и визуальные эффекты",
+      "order": 6,
+      "xp": 15,
+      "estimatedTime": 40
+    },
+    {
+      "slug": "chapter-07-summary",
+      "title": "Глава 7: Итоги проекта",
+      "order": 7,
+      "xp": 5,
+      "estimatedTime": 15
+    }
+  ],
+  "cheatSheet": "cheat-sheet.mdx",
+  "sprint": {
+    "slug": "sprint",
+    "title": "Финальный спринт: Свой шутер",
+    "order": 99,
+    "xp": 100
+  },
+  "bridge": {
+    "nextProject": "project-3-metroidvania",
+    "nextTitle": "Метроидвания"
+  }
+}

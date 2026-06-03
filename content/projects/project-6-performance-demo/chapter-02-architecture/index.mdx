@@ -1,0 +1,395 @@
+---
+title: "Глава 2: Архитектура"
+project: "project-6-performance-demo"
+chapter: "chapter-02-architecture"
+order: 2
+xp: 15
+estimatedTime: 40
+tags: []
+---
+
+
+## 2.1 Обзор архитектуры (4 слоя)
+
+Проект следует 4-слойной архитектуре, которая чётко разделяет данные, логику, представление и персистентность. Каждый слой взаимодействует только с соседними, что обеспечивает модульность и тестируемость. В отличие от предыдущих проектов, где все слои были реализованы на GDScript, здесь слои Data и Logic полностью реализованы на C++, а Presentation использует гибридный подход (C++ для MultiMesh, GDScript для HUD).
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    PRESENTATION LAYER                     │
+│        MultiMeshInstance3D, GPUParticles3D, Camera3D     │
+│              HUD (GDScript), PerfMonitor (C++)           │
+├─────────────────────────────────────────────────────────┤
+│                      LOGIC LAYER                         │
+│     ECS Systems (C++), Job System, Compute Shaders       │
+│     Frustum Culling, LOD, Boids AI, Collision            │
+├─────────────────────────────────────────────────────────┤
+│                       DATA LAYER                         │
+│     ECS Registry (C++), Components, Archetypes           │
+│     Pool Allocator, Arena Allocator, Spatial Hash        │
+├─────────────────────────────────────────────────────────┤
+│                   PERSISTENCE LAYER                      │
+│     Config Resources (GDScript), Scene Settings          │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Граница C++ / GDScript
+
+Критически важное решение — где провести границу между C++ и GDScript. Принцип прост: C++ для горячего кода (выполняется каждый кадр для тысяч сущностей), GDScript для холодного кода (настройка, UI, координация).
+
+| Слой | Язык | Причина |
+| --- | --- | --- |
+| Data Layer (ECS Registry, Components) | C++ | Тысячи обращений за кадр, нужна Data Locality |
+| Logic Layer (Systems, Job System) | C++ | Горячий цикл, многопоточность, compute |
+| Presentation (MultiMesh обновление) | C++ | Обновление 10K трансформ каждый кадр |
+| Presentation (HUD, PerfMonitor display) | GDScript | Низкая частота обновления, удобство |
+| Persistence (Config Resources) | GDScript + Resource | Настройка через инспектор, не в горячем цикле |
+| ECSWorld (координация) | C++ с GDScript bindings | Владеет Registry, вызывает Systems, экспортирует параметры |
+
+### Поток данных через слои
+
+```
+GDScript Inspector → ECSWorld._ready() → Registry.emplace() [Data Layer]
+                                        → Systems.init() [Logic Layer]
+                                        
+Each Frame:
+  ECSWorld._process(delta) → JobSystem.submit_batch() [Logic Layer]
+                           → MovementSystem.update() [Logic Layer]
+                           → BoidSystem.update() [Logic/Compute Layer]
+                           → RenderSystem.update() [Logic → Presentation]
+                           → FrustumCulling.update() [Logic Layer]
+                           → LODSystem.update() [Logic Layer]
+                           → PerfMonitor.update() [Presentation Layer]
+```
+
+## 2.2 Дерево сцен
+
+Дерево сцен демо минималистично по дизайну — минимум узлов, максимум работы через C++ и серверные API. Мы не создаём Node3D для каждого юнита; вместо этого все 10 000 юнитов рендерятся через три MultiMeshInstance3D.
+
+```
+BattlefieldDemo (Node)                          # Корневая сцена
+├── ECSWorld (C++ Node, GDExtension)           # Ядро: Registry + Systems
+│   ├── [Registry]                              # C++ внутренний объект
+│   ├── [JobSystem]                             # C++ внутренний объект
+│   └── [Systems]                               # Movement, Boid, Render, etc.
+├── Battlefield (Node3D)                        # 3D-контейнер
+│   ├── Terrain (MeshInstance3D)                # Плоскость поля битвы
+│   │   └── ShaderMaterial                      # Кастомный шейдер рельефа
+│   ├── InfantryMesh (MultiMeshInstance3D)      # ~5000 пехотинцев
+│   │   └── MultiMesh
+│   │       - mesh: InfantryMesh (LOD0)
+│   │       - instance_count: 5000
+│   │       - transform_format: Transform3D
+│   ├── CavalryMesh (MultiMeshInstance3D)       # ~3000 кавалеристов
+│   │   └── MultiMesh
+│   │       - mesh: CavalryMesh (LOD0)
+│   │       - instance_count: 3000
+│   │       - transform_format: Transform3D
+│   ├── ArcherMesh (MultiMeshInstance3D)        # ~2000 лучников
+│   │   └── MultiMesh
+│   │       - mesh: ArcherMesh (LOD0)
+│   │       - instance_count: 2000
+│   │       - transform_format: Transform3D
+│   ├── ParticleEffects (GPUParticles3D)        # Взрывы, дым, искры
+│   │   └── ProcessMaterial
+│   │       - shader: compute_particles.glsl
+│   └── GridLines (MeshInstance3D)              # Опционально: сетка для отладки
+├── CameraRig (Node3D)                          # Камера
+│   └── Camera3D
+│       - projection: Perspective
+│       - fov: 60
+│       - near: 0.5, far: 500
+├── DirectionalLight3D                          # Освещение
+│   - shadow_enabled: true
+│   - direction: (-45, -30, 0)
+├── WorldEnvironment                            # Окружение
+│   └── Environment
+│       - ambient_light: Color(0.2, 0.2, 0.25)
+│       - fog_enabled: true
+│       - fog_depth_begin: 80
+└── PerfMonitor (C++ Node)                     # Мониторинг производительности
+    └── CanvasLayer                            # HUD overlay
+        ├── FPSLabel (Label)
+        ├── FrameTimeGraph (Custom Control)
+        ├── DrawCallsLabel (Label)
+        └── ParamsPanel (VBoxContainer)        # Слайдеры параметров
+```
+
+### Описание ключевых узлов
+
+**ECSWorld** — единственный C++ узел, который владеет всем ECS-миром. Он не имеет визуального представления, но экспортирует параметры в инспектор Godot через `GDCLASS` и `PropertyList`. Через инспектор можно настроить: количество юнитов каждого типа, скорость симуляции, радиус поля битвы, включение/выключение отдельных Systems.
+
+**InfantryMesh / CavalryMesh / ArcherMesh** — три MultiMeshInstance3D, каждый рендерит один тип юнитов за один draw call. ECSWorld получает указатели на эти MultiMesh через `get_node()` и передаёт их в RenderSystem для обновления трансформ каждый кадр.
+
+**PerfMonitor** — C++ узел, который собирает метрики из ECSWorld и отображает их в HUD. Он вычисляет FPS, Frame Time, Draw Calls и обновляет HUD-элементы (созданные в GDScript или через CanvasItem) каждый кадр.
+
+## 2.3 Диаграмма классов
+
+Диаграмма классов показывает основные типы и их отношения. Ядро системы — Registry, который хранит компоненты в типизированных пулах и предоставляет интерфейс для итерации через view().
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                        ECS CORE                                │
+│                                                                │
+│  ┌──────────────┐    ┌──────────────────┐                     │
+│  │   Registry    │    │  ComponentPool<T> │                     │
+│  │──────────────│    │──────────────────│                     │
+│  │ - masks_      │    │ - data_: vector<T>│                    │
+│  │ - pools_      │───▶│ - dense_         │                     │
+│  │ - next_id_    │    │                  │                     │
+│  │──────────────│    │──────────────────│                     │
+│  │ + create()    │    │ + emplace()      │                     │
+│  │ + destroy()   │    │ + get()          │                     │
+│  │ + emplace<T>()│    │ + remove()       │                     │
+│  │ + get<T>()    │    │ + size()         │                     │
+│  │ + view<Ts...>│    │ + data()         │                     │
+│  │ + alive_count│    └──────────────────┘                     │
+│  └──────┬───────┘                                              │
+│         │                                                      │
+│         │ owns                                                 │
+│         ▼                                                      │
+│  ┌──────────────────────────────────────────────────┐         │
+│  │                     SYSTEMS                       │         │
+│  │                                                  │         │
+│  │  ┌────────────────┐  ┌────────────────┐         │         │
+│  │  │ MovementSystem │  │   BoidSystem   │         │         │
+│  │  │────────────────│  │────────────────│         │         │
+│  │  │ + update()     │  │ + update()     │         │         │
+│  │  │ Transform+Vel  │  │ Boid+Transform │         │         │
+│  │  └────────────────┘  └────────────────┘         │         │
+│  │                                                  │         │
+│  │  ┌────────────────┐  ┌────────────────┐         │         │
+│  │  │  RenderSystem  │  │  CombatSystem  │         │         │
+│  │  │────────────────│  │────────────────│         │         │
+│  │  │ + update()     │  │ + update()     │         │         │
+│  │  │ Transform+Rend │  │ Health+Pos     │         │         │
+│  │  │ - multimesh_   │  │                │         │         │
+│  │  └────────────────┘  └────────────────┘         │         │
+│  │                                                  │         │
+│  │  ┌────────────────┐  ┌────────────────┐         │         │
+│  │  │ FrustumCulling│  │   LODSystem    │         │         │
+│  │  │────────────────│  │────────────────│         │         │
+│  │  │ + update()     │  │ + update()     │         │         │
+│  │  │ - frustum_     │  │ - camera_pos_  │         │         │
+│  │  └────────────────┘  └────────────────┘         │         │
+│  └──────────────────────────────────────────────────┘         │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│                     INFRASTRUCTURE                              │
+│                                                                │
+│  ┌────────────────┐  ┌─────────────────┐  ┌────────────────┐ │
+│  │   JobSystem    │  │  PoolAllocator  │  │  SpatialHash   │ │
+│  │────────────────│  │─────────────────│  │────────────────│ │
+│  │ - workers_     │  │ - buffer_       │  │ - cell_size_   │ │
+│  │ - jobs_        │  │ - free_list_    │  │ - cells_        │ │
+│  │ - stopping_    │  │ - free_count_   │  │────────────────│ │
+│  │────────────────│  │─────────────────│  │ + insert()     │ │
+│  │ + submit()     │  │ + allocate()    │  │ + query()      │ │
+│  │ + submit_batch│  │ + deallocate()  │  │ + clear()      │ │
+│  │ + wait_all()   │  │                 │  │                 │ │
+│  │ + thread_count│  │                 │  │                 │ │
+│  └────────────────┘  └─────────────────┘  └────────────────┘ │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│                    GODOT INTEGRATION                            │
+│                                                                │
+│  ┌──────────────────┐  ┌──────────────────┐                   │
+│  │    ECSWorld      │  │   PerfMonitor    │                   │
+│  │ (Node, GDClass)  │  │ (Node, GDClass)  │                   │
+│  │──────────────────│  │──────────────────│                   │
+│  │ - registry_      │  │ - fps_           │                   │
+│  │ - job_system_    │  │ - frame_times_   │                   │
+│  │ - systems_       │  │ - draw_calls_    │                   │
+│  │──────────────────│  │──────────────────│                   │
+│  │ + _ready()       │  │ + _process()     │                   │
+│  │ + _process()     │  │ + update_hud()   │                   │
+│  │ + _notification()│  │                  │                   │
+│  │ [export] unit_count│ [export] show_graph│                  │
+│  │ [export] sim_speed│                  │                    │
+│  └──────────────────┘  └──────────────────┘                   │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### Ключевые классы и их ответственность
+
+| Класс | Слой | Ответственность |
+| --- | --- | --- |
+| Registry | Data | Хранение компонентов, создание/уничтожение сущностей, итерация через view() |
+| ComponentPool<T> | Data | Типизированный пул компонентов с непрерывным хранением в памяти |
+| MovementSystem | Logic | Обновление позиций на основе скоростей |
+| BoidSystem | Logic | Вычисление векторов руления по правилам boids |
+| RenderSystem | Logic→Presentation | Заполнение буфера трансформ для MultiMesh |
+| CombatSystem | Logic | Проверка столкновений и нанесение урона |
+| FrustumCulling | Logic | Отсечение невидимых юнитов за пределами frustum |
+| LODSystem | Logic | Выбор уровня детализации по дистанции до камеры |
+| JobSystem | Infrastructure | Пул потоков для параллельного выполнения задач |
+| PoolAllocator | Infrastructure | Быстрое выделение памяти фиксированного размера |
+| SpatialHash | Infrastructure | Пространственное хеширование для поиска соседей |
+| ECSWorld | Godot Integration | Мост между C++ ECS и деревом узлов Godot |
+| PerfMonitor | Godot Integration | Сбор и отображение метрик производительности |
+
+## 2.4 Поток данных
+
+Поток данных в демо чётко разделён на фазы, каждая из которых выполняется последовательно в `_process()`. Это гарантирует, что системы, зависящие от результатов предыдущих систем, получают актуальные данные.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     FRAME PIPELINE                               │
+│                                                                  │
+│  1. INPUT                                                        │
+│     Camera input → Camera position update                       │
+│     Parameter changes → ECSWorld configuration                  │
+│                                                                  │
+│  2. PHYSICS / MOVEMENT  (фоновые потоки через JobSystem)        │
+│     ┌──────────────────────────────────────────────┐            │
+│     │ MovementSystem.update(delta)                  │            │
+│     │   pos += vel × delta  (для всех Transform+Vel)│            │
+│     │   [parallel: JobSystem.submit_batch]          │            │
+│     └──────────────────────────────────────────────┘            │
+│                                                                  │
+│  3. AI / BOIDS  (compute-шейдер или CPU fallback)               │
+│     ┌──────────────────────────────────────────────┐            │
+│     │ BoidSystem.update(delta)                      │            │
+│     │   SpatialHash.rebuild(positions)              │            │
+│     │   Для каждого boid:                           │            │
+│     │     neighbors = spatial_hash.query(pos)       │            │
+│     │     steer = separation + alignment + cohesion │            │
+│     │     velocity += steer × delta                 │            │
+│     └──────────────────────────────────────────────┘            │
+│                                                                  │
+│  4. COMBAT  (фоновые потоки)                                    │
+│     ┌──────────────────────────────────────────────┐            │
+│     │ CombatSystem.update(delta)                    │            │
+│     │   Проверка столкновений по SpatialHash        │            │
+│     │   Нанесение урона по HealthComponent          │            │
+│     └──────────────────────────────────────────────┘            │
+│                                                                  │
+│  5. CULLING + LOD  (главный поток, нужен Camera3D)              │
+│     ┌──────────────────────────────────────────────┐            │
+│     │ FrustumCulling.update(camera)                 │            │
+│     │   Извлечь 6 плоскостей frustum               │            │
+│     │   Пометить невидимые Renderable.visible=false │            │
+│     │ LODSystem.update(camera_pos)                  │            │
+│     │   Рассчитать дистанцию для каждого юнита      │            │
+│     │   Обновить mesh_index в RenderableComponent   │            │
+│     └──────────────────────────────────────────────┘            │
+│                                                                  │
+│  6. RENDER SYNC  (главный поток, доступ к Godot API)            │
+│     ┌──────────────────────────────────────────────┐            │
+│     │ RenderSystem.update(registry)                 │            │
+│     │   Для каждого Transform + Renderable:         │            │
+│     │     multimesh->set_instance_transform(i, t)   │            │
+│     │   multimesh->set_visible_instance_count(cnt)  │            │
+│     └──────────────────────────────────────────────┘            │
+│                                                                  │
+│  7. MONITORING  (главный поток)                                 │
+│     PerfMonitor.update() → FPS, FrameTime, DrawCalls            │
+│                                                                  │
+│  8. GPU PARTICLES  (асинхронно, на GPU)                         │
+│     GPUParticles3D update (выполняется Godot автоматически)     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Временная диаграмма (параллельное выполнение)
+
+```
+Главный поток:    [Input] [Job submit] [wait] [Culling] [RenderSync] [Monitor]
+                          ↓               ↑
+Поток 1:                  [Movement 0-1250] [Boid 0-1250]
+Поток 2:                  [Movement 1250-2500] [Boid 1250-2500]
+Поток 3:                  [Movement 2500-3750] [Boid 2500-3750]
+Поток 4:                  [Movement 3750-5000] [Boid 3750-5000]
+...
+Поток 7:                  [Movement 8750-10000] [Boid 8750-10000]
+
+GPU:              [Compute Boids] [Compute Particles] [Render MultiMesh]
+```
+
+Movement и Boid фазы выполняются параллельно на 8 потоках. После `wait_all()` главный поток выполняет Culling и RenderSync, которым нужен доступ к Godot API. GPU работает параллельно с CPU: compute-шейдеры запускаются в начале кадра, а рендеринг MultiMesh происходит в конце.
+
+## 2.5 Паттерны проектирования
+
+### Паттерн: Entity-Component-System (ECS)
+
+ECS — это основной архитектурный паттерн проекта. В отличие от OOP, где объект объединяет данные и логику, ECS разделяет их: Entity — это просто ID, Component — данные без логики, System — логика без данных. Это обеспечивает максимальную Data Locality и простую параллелизацию.
+
+```
+OOP подход (плохо для кэша):
+  Unit { position, velocity, health, mesh, ai_state, ... }
+  ↑ каждый Unit разбросан в куче, кэш-промахи при обходе
+
+ECS подход (хорошо для кэша):
+  Position[] = [p0, p1, p2, ..., p9999]  ← непрерывный массив
+  Velocity[] = [v0, v1, v2, ..., v9999]  ← непрерывный массив
+  Health[]   = [h0, h1, h2, ..., h9999]  ← непрерывный массив
+  ↑ MovementSystem обходит Position+Velocity → кэш-попадания
+```
+
+### Паттерн: Strategy (стратегии boids)
+
+Разные типы юнитов имеют разные параметры boids. Вместо условных проверок типа `if (unit_type == CAVALRY)` внутри горячего цикла, мы используем паттерн Strategy через BoidComponent: каждый юнит хранит свои веса и радиус восприятия, и BoidSystem обрабатывает все юниты одинаково, используя данные из компонента.
+
+### Паттерн: Flyweight (общие данные через компоненты)
+
+Компоненты с одинаковыми параметрами (например, все пехотинцы имеют одинаковые веса boids) используют паттерн Flyweight: общий BoidComponent хранится один раз, а все пехотинцы ссылаются на него. Это экономит память и улучшает кэш-локальность: вместо 5000 копий BoidComponent мы храним одну.
+
+### Паттерн: Object Pool (пул сущностей и компонентов)
+
+Мы не создаём и не уничтожаем сущности каждый кадр. Вместо этого при старте демо выделяется пул на максимальное количество сущностей (например, 50 000), и «создание» юнита — это просто активация заранее выделенного слота. «Уничтожение» — это деактивация и возврат в пул. Это устраняет аллокации в горячем цикле.
+
+### Паттерн: Double Buffer (двойной буфер для GPU→CPU)
+
+Для обратной связи GPU→CPU мы используем двойной буфер: GPU пишет в буфер A, пока CPU читает из буфера B. На следующем кадре буферы меняются местами. Это устраняет блокировки и гарантирует, что GPU и CPU никогда не обращаются к одному буферу одновременно.
+
+## 2.6 Структура файлов проекта
+
+```
+performance_demo/
+├── project.godot
+├── scenes/
+│   ├── battlefield.tscn              # Главная сцена демо
+│   └── hud.tscn                      # Сцена HUD (GDScript)
+├── scripts/
+│   ├── hud.gd                        # HUD-контроллер (GDScript)
+│   └── camera_controller.gd          # Управление камерой (GDScript)
+├── shaders/
+│   ├── compute_particles.glsl        # Compute-шейдер частиц
+│   ├── compute_boids.glsl            # Compute-шейдер boids
+│   └── terrain.gdshader              # Шейдер рельефа
+├── resources/
+│   ├── unit_config.tres              # Конфигурация юнитов (Resource)
+│   └── sim_params.tres               # Параметры симуляции (Resource)
+├── mesh/
+│   ├── infantry_lod0.obj             # Меш пехотинца (500 tri)
+│   ├── infantry_lod1.obj             # Меш пехотинца (100 tri)
+│   ├── infantry_lod2.obj             # Биллборд пехотинца (2 tri)
+│   ├── cavalry_lod0.obj
+│   └── archer_lod0.obj
+├── src/                              # C++ GDExtension
+│   ├── ecs/
+│   │   ├── core.h                    # Registry, EntityID, ComponentMask
+│   │   ├── components.h              # Все компоненты
+│   │   ├── systems.h                 # Все системы
+│   │   └── spatial_hash.h            # Пространственное хеширование
+│   ├── job/
+│   │   └── job_system.h              # Пул потоков
+│   ├── memory/
+│   │   ├── pool_allocator.h          # Пул памяти фиксированного размера
+│   │   └── arena_allocator.h         # Арена-аллокатор
+│   ├── rendering/
+│   │   ├── frustum.h                 # Frustum culling
+│   │   ├── lod_system.h              # LOD-система
+│   │   └── compute_manager.h         # Управление compute-шейдерами
+│   ├── nodes/
+│   │   ├── ecs_world.h               # ECSWorld (C++ Node)
+│   │   ├── ecs_world.cpp             # Реализация ECSWorld
+│   │   └── perf_monitor.h            # PerfMonitor (C++ Node)
+│   ├── register_types.h              # Регистрация GDExtension
+│   └── register_types.cpp
+├── SConstruct                         # Скрипт сборки SCons
+└── performance_demo.gdextension       # Файл описания GDExtension
+```
+
+---

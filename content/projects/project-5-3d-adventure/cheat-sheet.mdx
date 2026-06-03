@@ -1,0 +1,56 @@
+---
+title: "Шпаргалка: 3D Navigation & Physics"
+project: "project-5-3d-adventure"
+chapter: "cheat-sheet"
+order: 98
+xp: 0
+estimatedTime: 0
+tags: []
+type: "cheat-sheet"
+---
+
+### CharacterBody3D
+| Действие | Код | Раздел |
+|---|---|---|
+| Движение | `velocity = direction * speed; move_and_slide()` | P5 §3.2 |
+| Камера-относительное | `var input := Input.get_vector("left","right","forward","back"); direction = (camera.global_basis * Vector3(input.x, 0, input.y)).normalized()` | P5 §3.2 |
+| Прыжок | `velocity.y = jump_velocity` (отрицательное = вверх) | P5 §3.2 |
+| Гравитация | `velocity.y -= gravity * delta` | P5 §3.2 |
+
+### SpringArm3D (Камера)
+| Действие | Настройка | Раздел |
+|---|---|---|
+| Создать | Add Node → SpringArm3D как дочерний Camera3D | P5 §2.2 |
+| Длина | `spring_length = 4.0` — расстояние от цели | P5 §2.2 |
+| Коллизия | Включить `collision_mask` для окружения | P5 §2.2 |
+| Поворот | `spring_arm.rotation.x = deg_to_rad(-15)` — наклон | P5 §2.2 |
+| Margin | `margin = 0.5` — зазор от препятствий | P5 §2.2 |
+
+### NavigationRegion3D
+| Действие | Настройка | Раздел |
+|---|---|---|
+| Создать | Add Node → NavigationRegion3D | P5 §2.1 |
+| Bake navmesh | NavigationRegion3D → Bake (в редакторе) | P5 §2.1 |
+| NavigationAgent3D | Добавить NPC, задать target_position | P5 §3.5 |
+| Движение NPC | `agent.get_next_path_position()` → `move_and_slide()` | P5 §3.5 |
+| Разделение зон | Отдельный NavigationRegion3D на каждую зону + quest-gated | P5 §1.4 |
+
+### Hitbox3D / Hurtbox3D
+| Компонент | Настройка | Раздел |
+|---|---|---|
+| Hurtbox | Area3D + CollisionShape3D, layer: hurtbox | P5 §1.5 |
+| Hitbox | Area3D + CollisionShape3D, layer: hitbox, disabled by default | P5 §1.5 |
+| BoneAttachment3D | Прикрепить Hitbox к кости анимации | P5 §2.2 |
+| Stamina-система | `stamina -= dodge_cost` при уклонении/тяжёлой атаке | P5 §1.3 |
+
+### NPC AI FSM (C++)
+| Состояние | Переход | Раздел |
+|---|---|---|
+| Idle | → Patrol (по таймеру), → Follow (игрок в зоне) | P5 §2.5 |
+| Patrol | → Idle (конец маршрута), → Follow (игрок в зоне) | P5 §2.5 |
+| Follow | → Attack (в дальности), → Flee (HP < 30%) | P5 §2.5 |
+| Attack | → Follow (цель ушла), → Stunned (парирование) | P5 §2.5 |
+| Flee | → Idle (далеко от игрока) | P5 §2.5 |
+| Stunned | → Idle (по таймеру 2 сек) | P5 §2.5 |
+
+---

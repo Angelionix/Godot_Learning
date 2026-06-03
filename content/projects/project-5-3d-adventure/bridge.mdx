@@ -1,0 +1,33 @@
+---
+title: "Мост к следующему проекту"
+project: "project-5-3d-adventure"
+chapter: "bridge"
+order: 100
+xp: 0
+estimatedTime: 5
+tags: []
+---
+
+В этом проекте вы научились:
+
+- ✅ **C++ для 3D** — AdventureCharacter, CameraController, CombatController, NPCController, InventorySystem, QuestSystem, DayNightCycle — всё на C++ через GDExtension → станет фундаментом для ECS-архитектуры в Проекте 6, где C++ владеет всем Data и Logic слоями
+- ✅ **3D-рендеринг** — CharacterBody3D, SpringArm3D, NavigationRegion3D, Area3D для Hitbox3D/Hurtbox3D → будет оптимизирован через MultiMesh (один draw call для тысяч юнитов вместо отдельных MeshInstance3D)
+- ✅ **3D-навигация** — NavigationRegion3D с запеканием navmesh для каждой зоны, NavigationAgent3D для NPC → будет дополнена пространственным хешированием (SpatialHash) для O(n×k) вместо O(n²) при поиске соседей
+- ✅ **FSM для AI** — пять состояний NPC (Idle, Patrol, Follow, Flee, Attack) → будет развёрнута в алгоритм boids (Separation, Alignment, Cohesion) для симуляции тысяч юнитов
+- ✅ **Инвентарь на C++** — HashMap для O(1) доступа, BoneAttachment3D для экипировки, to_dict()/from_dict() для сериализации → паттерн сохранится, но данные будут храниться в ECS-компонентах (TransformComponent, HealthComponent, RenderableComponent) вместо отдельных объектов
+- ✅ **Диалоговая система и квесты** — условные ветки, отслеживание целей, награды → не будут перенесены в Проект 6 (фокус на производительности), но навык data-driven дизайна останется
+
+В следующем проекте (Проект 6: Performance Demo) мы добавим:
+
+- ➕ **ECS-архитектура** — Entity-Component-System на C++ с Data Locality: компоненты хранятся в непрерывных массивах (SoA вместо AoS), итерация через view<Ts...> без виртуальных вызовов
+- ➕ **Многопоточность** — Job-система (пул потоков) для параллельного обновления тысяч сущностей, std::atomic для потокобезопасных флагов
+- ➕ **Compute-шейдеры** — GPU-симуляция boids и частиц через RenderingDevice, обмен данными CPU↔GPU через буферы
+- ➕ **MultiMesh** — рендеринг 10 000 юнитов за 3 draw call (вместо 10 000 отдельных MeshInstance3D)
+- ➕ **Кастомные аллокаторы** — PoolAllocator и ArenaAllocator для нулевых аллокаций в кадровом цикле
+- ➕ **Frustum culling + LOD** — отсечение невидимых объектов и три уровня детализации (500/100/2 треугольника)
+
+А также впервые встретимся с:
+
+- ⚡ **Экстремальная оптимизация** — если Проект 4 показал, что C++ быстрее GDScript в 26 раз, то Проект 6 покажет, что правильно спроектированная архитектура данных (ECS + Data Locality) быстрее наивного C++ ещё в 20 раз. Комбинация ECS + Job-система + compute-шейдеры + MultiMesh превращает 2 FPS с 10K объектов в 238 FPS — ускорение в 119 раз. Вы увидите, как каждая техника добавляет свой вклад: MultiMesh даёт 7.5x, ECS — 2.7x, многопоточность — 2.3x, compute — 1.7x, frustum+LOD — 1.6x. Это не теория — это измеримые, воспроизводимые результаты, которые вы сможете показать в портфолио.
+
+---

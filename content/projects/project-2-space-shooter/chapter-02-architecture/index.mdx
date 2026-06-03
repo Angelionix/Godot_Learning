@@ -1,0 +1,354 @@
+---
+title: "Глава 2: Архитектура"
+project: "project-2-space-shooter"
+chapter: "chapter-02-architecture"
+order: 2
+xp: 15
+estimatedTime: 40
+tags: []
+---
+
+
+## 2.1 Обзор архитектуры
+
+Архитектура нашего шутера строится на четырёх слоях, аналогично первому проекту, но с более жёстким разделением из-за специфики экшен-игры. В игре, где каждый кадр на счету, критически важно, чтобы производительный код не смешивался с игровой логикой, а логика — с представлением. Это не просто теоретический принцип: смешение этих слоёв приводит к коду, который невозможно оптимизировать, трудно тестировать и болезненно модифицировать.
+
+**Data Layer (Слой данных):** `WeaponData`, `WaveData`, `SpawnEntry`, `EnemyData` — все они наследуют `Resource` и хранятся как `.tres`-файлы. Этот слой полностью декларативен: он описывает, *что* существует, но не *как* это работает. Геймдизайнер может настраивать баланс, не открывая ни одного скрипта. Это критически важно для итеративной разработки: изменение скорости пули с 500 до 450 не должно требовать модификации кода.
+
+**Logic Layer (Слой логики):** `GameManager`, `WaveManager`, `ObjectPool` — глобальные менеджеры (Autoload), которые управляют состоянием игры. GameManager ведёт счёт и комбо, WaveManager контролирует волны, ObjectPool управляет жизненным циклом объектов. Эти менеджеры ничего не знают о визуале: GameManager не знает, как выглядит счёт, WaveManager не знает, как выглядит враг. Они оперируют данными и генерируют сигналы.
+
+**Presentation Layer (Слой представления):** `Player`, `Enemy`, `Bullet`, `Pickup`, `HUD` — сцены, которые игрок видит на экране. Этот слой реагирует на сигналы логического слоя и обновляет визуал. HUD обновляет счёт при получении сигнала `score_changed`, а не опрашивает GameManager каждый кадр. Это более эффективно и лучше разделяет ответственности.
+
+**Audio Layer (Слой звука):** `AudioManager` — централизованный менеджер воспроизведения звуков с пулом каналов. Он отделён от остальных слоёв, потому что аудио имеет свои особенности: ограниченное количество одновременно воспроизводимых звуков, раздельные шины для музыки и эффектов, необходимость предотвращать звуковое перегрузку.
+
+Разделение слоёв особенно критично в экшен-игре по нескольким причинам. Во-первых, производительность: ObjectPool работает с Node-объектами на низком уровне, и его код должен быть максимально простым и быстрым. Если бы ObjectPool знал о логике волн или визуале HUD, каждый вызов `release()` тянул бы за собой зависимости, которые замедляют выполнение. Во-вторых, тестируемость: WaveManager можно тестировать изолированно, проверяя, что волна генерирует правильное количество врагов, без необходимости запускать всю игру. В-третьих, итеративность: геймдизайнер может настраивать `.tres`-файлы, не рискуя сломать логику.
+
+## 2.2 Дерево сцен
+
+Дерево сцен — это структурный каркас игры. Каждая сцена — это самостоятельный, переиспользуемый компонент с чётко определённой ответственностью. Правильная организация дерева сцен определяет, насколько легко будет добавлять новый контент и отлаживать проблемы. Ниже приведены полные ASCII-диаграммы для всех сцен проекта.
+
+**main.tscn:**
+
+```
+Main (Node2D) [scripts/main.gd]
+├── Background (ParallaxLayer) x3  — параллакс-звёзды
+├── PlayArea (Node2D)
+│   ├── Player (instanciated from player.tscn)
+│   ├── EnemyContainer (Node2D)  — динамические враги
+│   ├── BulletContainer (Node2D) — динамические снаряды
+│   └── PickupContainer (Node2D) — динамические бонусы
+├── ExplosionContainer (Node2D)  — эффекты
+└── HUD (CanvasLayer) [scripts/hud.gd]
+    ├── ScoreLabel (Label)
+    ├── HealthBar (TextureProgressBar)
+    ├── WaveLabel (Label)
+    ├── ComboLabel (Label)
+    └── BossHealthBar (TextureProgressBar) — visible only during boss
+```
+
+Контейнеры (EnemyContainer, BulletContainer, PickupContainer, ExplosionContainer) служат для организации динамических объектов. Вместо того чтобы добавлять объекты напрямую в Main, мы помещаем их в контейнеры. Это упрощает очистку (можно удалить всех врагов через `EnemyContainer.get_children()`) и отладку (в редакторе видно, сколько объектов каждого типа активно). Контейнеры также помогают с z-индексами: все снаряды отрисовываются на одном уровне, все враги — на другом.
+
+**player.tscn:**
+
+```
+Player (CharacterBody2D) [scripts/player.gd]
+├── Sprite2D
+├── CollisionShape2D (RectangleShape2D)
+├── Hitbox (Area2D) — layer: Player, mask: EnemyBullet + Pickup
+│   └── CollisionShape2D
+├── GunPosition (Marker2D) — позиция спавна снарядов
+├── EngineParticles (GPUParticles2D)
+└── ShieldVisual (ColorRect) — видимый щит, обычно скрыт
+```
+
+Обратите внимание на отдельный узел Hitbox (Area2D) внутри Player. Зачем он нужен, если у CharacterBody2D уже есть CollisionShape2D? Причина — в разделении столкновений: основная форма (CollisionShape2D) используется для физического столкновения с телами, а Hitbox (Area2D) — для обнаружения вражеских снарядов и бонусов. Area2D генерирует сигналы `area_entered` и `body_entered`, которые удобнее для обработки попаданий, чем ручная проверка в `_physics_process`. Marker2D GunPosition определяет точку, откуда появляются снаряды — это позволяет легко смещать позицию стрельбы без изменения кода.
+
+**enemy_base.tscn:**
+
+```
+EnemyBase (CharacterBody2D) [scripts/enemy_base.gd]
+├── Sprite2D
+├── CollisionShape2D
+├── Hitbox (Area2D) — layer: Enemy, mask: PlayerBullet
+│   └── CollisionShape2D
+└── GunPosition (Marker2D)
+```
+
+Структура enemy_base аналогична player: CharacterBody2D для физического движения, Area2D Hitbox для обнаружения снарядов игрока, Marker2D для позиции стрельбы. Конкретные враги наследуют эту сцену и могут добавлять дополнительные узлы: bomber добавляет MinePosition, boss добавляет несколько GunPosition для разных типов атак.
+
+**bullet.tscn:**
+
+```
+Bullet (Area2D) [scripts/bullet.gd]
+├── Sprite2D
+└── CollisionShape2D
+```
+
+Снаряд использует Area2D, а не CharacterBody2D, потому что ему не нужна физика — он движется по прямой с постоянной скоростью и не взаимодействует со стенами. Area2D легче по производительности и генерирует сигналы столкновений автоматически. CollisionShape2D отключается при возврате в пул с помощью `set_deferred("disabled", true)`, чтобы неактивные снаряды не генерировали ложных столкновений.
+
+**pickup.tscn:**
+
+```
+Pickup (Area2D) [scripts/pickup.gd]
+├── Sprite2D
+├── CollisionShape2D
+└── AnimationPlayer (для покачивания)
+```
+
+AnimationPlayer создаёт эффект покачивания — лёгкое синусоидальное движение вверх-вниз, которое привлекает внимание игрока. Альтернативно, покачивание можно реализовать через код (как в нашем скрипте), но AnimationPlayer даёт более плавный результат и не требует вычислений каждый кадр.
+
+**explosion.tscn:**
+
+```
+Explosion (Node2D)
+├── MainFlame (GPUParticles2D)
+├── Debris (GPUParticles2D)
+└── Glow (Sprite2D) — с explosion.gdshader
+```
+
+Взрыв состоит из трёх компонентов: основное пламя (яркие, крупные частицы), обломки (мелкие, быстро разлетающиеся частицы) и свечение (шейдерный спрайт, который расширяется и затухает). Комбинация этих трёх слоёв создаёт эффект, который выглядит значительно лучше, чем каждый компонент по отдельности.
+
+**hud.tscn:**
+
+```
+HUD (CanvasLayer) [scripts/hud.gd]
+├── TopBar (HBoxContainer)
+│   ├── ScoreLabel (Label)
+│   └── WaveLabel (Label)
+├── HealthBar (TextureProgressBar)
+├── ComboLabel (Label)
+├── BossHealthBar (TextureProgressBar)
+└── MessageLabel (Label) — "Волна 3!", "БОСС!", etc.
+```
+
+HUD использует CanvasLayer, чтобы оставаться на месте независимо от движения камеры. HBoxContainer автоматически располагает ScoreLabel и WaveLabel в строку. BossHealthBar по умолчанию скрыт и появляется только во время босс-файта. MessageLabel показывает временные сообщения (номер волны, предупреждение о боссе) и автоматически скрывается через 2 секунды.
+
+## 2.3 Диаграмма классов
+
+Диаграмма классов показывает отношения между основными скриптами проекта. Понимание этих отношений критически важно для навигации по кодовой базе и предотвращения циклических зависимостей.
+
+```
+Resource (встроенный)
+├── WeaponData          — данные оружия (fire_rate, damage, bullet_count)
+├── EnemyData           — данные врага (health, speed, behavior)
+├── WaveData            — данные волны (spawn_entries, interval)
+└── SpawnEntry          — запись спавна (enemy_scene, count, delay)
+
+Node (Autoload)
+├── GameManager         — состояние игры (score, combo, pause)
+├── WaveManager         — система волн (current_wave, enemies_alive)
+├── ObjectPool          — пул объектов (pools, scenes)
+└── AudioManager        — звуковое воспроизведение (sfx_library, channels)
+
+CharacterBody2D
+├── Player              — корабль игрока (weapons, health, shield)
+└── EnemyBase           — базовый враг (data, behavior, fire_timer)
+    ├── EnemyFighter    — зигзаг-движение
+    ├── EnemyTank       — медленный + очереди
+    ├── EnemyBomber     — сброс мин
+    ├── EnemyElite      — круговой обход
+    └── Boss            — 3 фазы, сложные паттерны
+
+Area2D
+├── Bullet              — снаряд (direction, speed, damage)
+└── Pickup              — бонус (type, value)
+
+CanvasLayer
+└── HUD                 — интерфейс (score, health, wave, combo)
+```
+
+Ключевые отношения: Player содержит массив `WeaponData` и генерирует сигналы `health_changed`, `player_died`, `weapon_changed`. EnemyBase содержит `EnemyData` и генерирует сигнал `died`. WaveManager содержит массив `WaveData` и генерирует сигналы `wave_started`, `wave_completed`. ObjectPool не зависит от конкретных типов объектов — он работает с `Node` и `PackedScene`. GameManager не зависит от визуальных компонентов — он оперирует числами и генерирует сигналы.
+
+## 2.4 Поток данных
+
+Понимание потока данных — ключ к отладке и модификации архитектуры. Рассмотрим два ключевых сценария.
+
+**Сценарий 1: Игрок стреляет и уничтожает врага**
+
+```
+Player._physics_process()
+  → Player.shoot()
+    → ObjectPool.get_instance(bullet_scene)   — получение снаряда из пула
+    → Bullet инициализируется (position, direction, speed, damage)
+
+Bullet._physics_process()
+  → Bullet движется: position += direction * speed * delta
+
+Bullet._on_area_entered(enemy_hitbox)
+  → enemy.has_method("take_damage")?  → да
+  → EnemyBase.take_damage(damage)
+    → health -= damage
+    → health <= 0?  → да
+    → EnemyBase.die()
+      → died.emit(points)               — сигнал
+      → ObjectPool.get_instance(explosion_scene)  — эффект взрыва
+      → spawn_pickup() if random check passes
+      → ObjectPool.release(self)         — возврат врага в пул
+  → Bullet.return_to_pool()
+    → CollisionShape2D.set_deferred("disabled", true)
+    → ObjectPool.release(self)           — возврат снаряда в пул
+
+WaveManager._on_enemy_died(points)
+  → enemies_alive -= 1
+  → GameManager.add_score(points)
+    → score += points * combo
+    → combo += 1 (max 4)
+    → score_changed.emit(score)
+    → combo_changed.emit(combo)
+
+HUD._on_score_changed(new_score)
+  → ScoreLabel.text = "Очки: %d" % new_score
+```
+
+Этот поток демонстрирует слабую связанность: Player не знает о WaveManager, EnemyBase не знает о HUD, Bullet не знает о GameManager. Все взаимодействия происходят через сигналы и методы, что позволяет изменять любой компонент независимо от других.
+
+**Сценарий 2: Система волн создаёт врагов**
+
+```
+WaveManager.start_next_wave()
+  → WaveData = waves[current_wave]
+  → wave_started.emit(wave_number)        — HUD показывает "Волна N"
+  → _build_spawn_queue(wave)
+    → для каждого SpawnEntry:
+        → добавить N записей в _spawn_queue
+
+WaveManager._process(delta)
+  → _spawn_timer -= delta
+  → _spawn_timer <= 0?
+    → _spawn_next_enemy()
+      → entry = _spawn_queue.pop_front()
+      → enemy = ObjectPool.get_instance(entry.scene)  — из пула
+      → enemy.global_position = случайная позиция за верхним краем
+      → enemy.died.connect(_on_enemy_died)            — подключение сигнала
+      → enemy._is_active = true
+      → enemies_alive += 1
+      → _spawn_timer = entry.delay
+
+WaveManager._on_enemy_died(points)
+  → enemies_alive -= 1
+  → GameManager.add_score(points)
+  → enemies_alive <= 0 AND _spawn_queue.is_empty()?
+    → wave_completed.emit(wave_number)
+    → timer(3.0).timeout → start_next_wave()          — следующая волна
+```
+
+Поток данных при спавне демонстрирует роль ObjectPool как фабрики: WaveManager запрашивает объекты через `get_instance()`, не зная, создаётся ли новый объект или переиспользуется существующий. Это позволяет прозрачно оптимизировать производительность, не меняя логику спавна.
+
+## 2.5 Паттерны проектирования
+
+Паттерны проектирования — это проверенные решения типичных проблем. В нашем проекте мы применяем несколько паттернов, каждый из которых решает конкретную задачу. Важно понимать не только *как* они реализованы, но и *почему* — какую проблему решает каждый паттерн.
+
+| Паттерн | Где применён | Зачем |
+|---|---|---|
+| Observer (Сигналы) | died, wave_started, health_changed | Слабая связанность между объектами |
+| Object Pool | Bullets, enemies, explosions, pickups | Оптимизация: без instantiate/queue_free в рантайме |
+| Strategy | WeaponData + разные конфигурации снарядов | Разные оружия без подклассов |
+| Template Method | enemy_base.gd + scene inheritance | Общая логика врага, вариации в наследниках |
+| State | Boss phases (enum + match) | Разное поведение в разных фазах |
+| Singleton (Autoload) | GameManager, WaveManager, ObjectPool, AudioManager | Глобальный доступ к менеджерам |
+| Factory | ObjectPool.get_instance() как PackedScene factory | Создание объектов из пула |
+| Data-View separation | WeaponData/WaveData vs UI components | Баланс в .tres, UI в сценах |
+
+Паттерн Observer (реализованный через сигналы Godot) — самый часто используемый паттерн в проекте. Когда враг умирает, он испускает сигнал `died`, и WaveManager реагирует на него, уменьшая счётчик живых врагов. Враг не знает о WaveManager, WaveManager не знает о HUD — каждый компонент работает автономно. Это критически важно для расширяемости: если мы захотим добавить achievement-систему, которая отслеживает уничтожение определённого количества врагов, нам просто нужно подключить новый слушатель к сигналу `died`, не модифицируя ни EnemyBase, ни WaveManager.
+
+Паттерн Object Pool — это оптимизационный паттерн, который критически важен для экшен-игр. Без него каждый выстрел создавал бы новый узел через `instantiate()`, а каждое попадание удаляло бы его через `queue_free()`. В бою с десятками снарядов на экране это приводит к фрагментации памяти и задержкам. Object Pool预先 создаёт объекты и переиспользует их, избегая накладных расходов на аллокацию памяти.
+
+Паттерн Template Method реализован через метод `move_behavior()` в `enemy_base.gd`: базовый класс определяет структуру поведения (движение → стрельба → проверка границ), а дочерние классы переопределяют конкретные шаги. Это позволяет добавлять новые типы поведения, не дублируя общую логику.
+
+## 2.6 Структура файлов проекта
+
+Организация файловой структуры — это не просто эстетика, это практическая необходимость. Когда проект вырастает до десятков файлов, способность быстро найти нужный скрипт или ресурс экономит часы разработки. Наша структура следует простому правилу: каждый тип файла в своей папке, каждая сцена — рядом с соответствующим скриптом (если они не разделены по папкам).
+
+```
+res://
+├── scenes/
+│   ├── main.tscn
+│   ├── player.tscn
+│   ├── enemy_base.tscn
+│   ├── enemy_scout.tscn      (наследует enemy_base)
+│   ├── enemy_fighter.tscn     (наследует enemy_base)
+│   ├── enemy_tank.tscn        (наследует enemy_base)
+│   ├── enemy_bomber.tscn      (наследует enemy_base)
+│   ├── enemy_elite.tscn       (наследует enemy_base)
+│   ├── boss.tscn              (наследует enemy_base)
+│   ├── bullet.tscn
+│   ├── pickup.tscn
+│   ├── explosion.tscn
+│   └── hud.tscn
+├── scripts/
+│   ├── main.gd
+│   ├── player.gd
+│   ├── enemy_base.gd
+│   ├── enemy_scout.gd
+│   ├── enemy_fighter.gd
+│   ├── enemy_tank.gd
+│   ├── enemy_bomber.gd
+│   ├── enemy_elite.gd
+│   ├── boss.gd
+│   ├── bullet.gd
+│   ├── pickup.gd
+│   ├── hud.gd
+│   ├── game_manager.gd
+│   ├── wave_manager.gd
+│   ├── object_pool.gd
+│   ├── audio_manager.gd
+│   ├── weapon_data.gd
+│   ├── enemy_data.gd
+│   ├── wave_data.gd
+│   └── spawn_entry.gd
+├── resources/
+│   ├── weapons/
+│   │   ├── pistol.tres
+│   │   ├── machinegun.tres
+│   │   ├── spreadgun.tres
+│   │   └── laser.tres
+│   ├── waves/
+│   │   ├── wave_01.tres through wave_10.tres
+│   │   └── boss_wave.tres
+│   └── enemies/
+│       ├── scout_data.tres
+│       ├── fighter_data.tres
+│       ├── tank_data.tres
+│       ├── bomber_data.tres
+│       └── elite_data.tres
+├── shaders/
+│   ├── star_field.gdshader
+│   └── explosion.gdshader
+├── assets/
+│   ├── sprites/
+│   ├── audio/
+│   │   ├── sfx/
+│   │   └── music/
+│   └── fonts/
+└── project.godot
+```
+
+Обратите внимание на разделение `scenes/` и `scripts/`. Хотя Godot позволяет хранить скрипты рядом со сценами, для учебного проекта лучше разделять их — это подчёркивает, что скрипт — это логика, а сцена — это композиция. Папка `resources/` с подпапками `weapons/`, `waves/`, `enemies/` организует данные по категориям, что упрощает навигацию для геймдизайнера.
+
+## 2.7 Слои столкновений
+
+Система столкновений Godot основана на 32 физическиx слоях. Каждый объект может находиться на одном или нескольких слоях (layer) и проверять столкновения с одним или несколькими слоями (mask). Правильная конфигурация слоёв — это не только логическая правильность, но и оптимизация: чем меньше пар объектов проверяют столкновения, тем выше производительность.
+
+| Слой # | Название | Объекты |
+|---|---|---|
+| 1 | Player | Корабль игрока |
+| 2 | PlayerBullet | Снаряды игрока |
+| 3 | Enemy | Враги и боссы |
+| 4 | EnemyBullet | Снаряды врагов |
+| 5 | Pickup | Бонусы |
+
+Матрица взаимодействий (layer → mask):
+
+| | Player | PlayerBullet | Enemy | EnemyBullet | Pickup |
+|---|---|---|---|---|---|
+| Player | — | — | — | ✓ | ✓ |
+| PlayerBullet | — | — | ✓ | — | — |
+| Enemy | — | ✓ | — | — | — |
+| EnemyBullet | ✓ | — | — | — | — |
+| Pickup | — | — | — | — | — |
+
+Обратите внимание на несколько важных деталей. PlayerBullet не проверяет столкновения с Player — это предотвращает «самоповреждение» от собственных снарядов. Enemy не проверяет столкновения с EnemyBullet — вражеские снаряды не должны вредить своим же. Enemy не проверяет столкновения с Enemy — враги не должны сталкиваться друг с другом (это было бы визуально странно и создало бы ненужные физические взаимодействия). Pickup не имеет масок — он проверяется другими объектами (Player проверяет Pickup), но сам ничего не проверяет.
+
+Для настройки названий слоёв в Godot перейдите в Project → Project Settings → Layer Names → 2D Physics. Присвойте слоям 1–5 имена Player, PlayerBullet, Enemy, EnemyBullet, Pickup соответственно. После этого в инспекторе каждого узла столкновений вы будете видеть понятные названия вместо номеров.
+
+---

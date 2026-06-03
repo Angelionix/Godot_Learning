@@ -1,0 +1,409 @@
+---
+title: "Глава 2: Архитектура"
+project: "project-5-3d-adventure"
+chapter: "chapter-02-architecture"
+order: 2
+xp: 15
+estimatedTime: 45
+tags: []
+---
+
+
+## 2.1 Обзор архитектуры (4 слоя)
+
+Архитектура 3D-приключения строится на четырёх слоях, каждый из которых имеет чёткую зону ответственности. Особенность этого проекта — C++ играет основную роль в Logic и Presentation слоях, а GDScript доминирует в Data и Persistence. Это осознанный выбор: C++ обеспечивает производительность для физических подсистем, GDScript — удобство для данных и UI.
+
+**Data Layer (Слой данных):** ItemData, QuestData, QuestObjective, DialogueData, DialogueLine, DialogueChoice, EnemyData, NPCData — все наследуют Resource и используют @export для настройки в редакторе. Никакой логики, только данные. Ресурсы создаются на GDScript для удобства редактирования в инспекторе Godot. C++ код читает эти ресурсы через GDExtension API.
+
+**Logic Layer (Слой логики):** Глобальные менеджеры и C++ контроллеры. GameManager (состояние игры, пауза, регистрация игрока — GDScript Autoload), AdventureCharacter (контроллер персонажа — C++), CameraController (камера — C++), CombatController (бой — C++), NPCController (AI — C++), InventorySystem (инвентарь — C++), QuestSystem (квесты — C++), DayNightCycle (день/ночь — C++), EconomyManager (экономика — GDScript Autoload), AudioManager (звук — GDScript Autoload). Все менеджеры общаются через сигналы, обеспечивая слабую связанность.
+
+**Presentation Layer (Слой представления):** Player, NPC scenes, Enemy scenes, PickableItem, HUD, DialoguePanel, InventoryUI, QuestLogUI, CraftingPanel — все визуальные компоненты. Этот слой отображает данные из Data Layer и реагирует на сигналы из Logic Layer, но не содержит бизнес-логики. HUD обновляет полоску здоровья, когда получает сигнал health_changed, но не вычисляет урон самостоятельно.
+
+**Persistence Layer (Слой хранения):** SaveManager (Autoload) — сериализует состояние игры в JSON, десериализует при загрузке. Каждый менеджер предоставляет методы get_save_data() и load_save_data(), а SaveManager координирует процесс, собирая данные от всех менеджеров в единую структуру. InventorySystem.to_dict() конвертирует C++ структуры в Dictionary для совместимости с Godot.
+
+## 2.2 Дерево сцен
+
+Дерево сцен — визуальное представление архитектуры. Каждая сцена инкапсулирует свою функциональность и открывает только необходимые интерфейсы (сигналы, методы). Ниже приведены полные деревья для всех ключевых сцен проекта.
+
+### main.tscn
+
+Главная сцена, которая загружается при старте игры. Содержит мир, игрока, HUD и менеджеры UI. C++ контроллеры подключены как дочерние узлы к соответствующим сценам.
+
+```
+Main (Node3D) [scripts/main.gd]
+├── World (Node3D) [scenes/world.tscn]
+│   ├── NavigationRegion3D
+│   │   └── NavigationMesh
+│   ├── Environment (WorldEnvironment)
+│   ├── SunLight (DirectionalLight3D) — управляется DayNightCycle
+│   ├── Terrain (StaticBody3D)
+│   │   ├── MeshInstance3D (ландшафт)
+│   │   └── CollisionShape3D
+│   ├── Props (Node3D) — деревья, камни, здания
+│   ├── NPCs (Node3D) — group: "npcs_container"
+│   ├── Enemies (Node3D) — group: "enemies_container"
+│   ├── Items (Node3D) — group: "items_container"
+│   ├── Effects (Node3D) — визуальные эффекты
+│   ├── SpawnPoint (Marker3D) — group: "spawn_point"
+│   └── SavePoints (Node3D)
+│       └── SavePoint (Area3D) [scenes/save_point.tscn]
+├── Player (CharacterBody3D) [scenes/player.tscn]
+└── HUD (CanvasLayer) [scenes/hud.tscn]
+```
+
+### player.tscn
+
+Сцена игрока — самая сложная в проекте. Содержит CharacterBody3D с C++ скриптом AdventureCharacter, камеру, модель, Hitbox/Hurtbox, контроллер боя и компонент здоровья.
+
+```
+Player (CharacterBody3D) [C++: AdventureCharacter]
+├── CharacterModel (Node3D)
+│   ├── BodyMesh (MeshInstance3D)
+│   ├── RightHand (BoneAttachment3D) — точка крепления оружия
+│   └── AnimationPlayer
+├── CollisionShape3D (CapsuleShape3D) — height: 1.8, radius: 0.4
+├── CameraPivot (Node3D) [C++: CameraController]
+│   └── SpringArm3D — spring_length: 4.0
+│       └── Camera3D — fov: 70, cull_mask: все слои
+├── GroundRay (RayCast3D) — target_position: (0, -1.0, 0)
+├── Hurtbox (Area3D) [scripts/hurtbox_3d.gd]
+│   └── CollisionShape3D (CapsuleShape3D)
+├── HitboxPivot (Node3D)
+│   └── Hitbox (Area3D) [scripts/hitbox_3d.gd]
+│       └── CollisionShape3D (BoxShape3D) — disabled by default
+├── InteractionArea (Area3D) — для подбора предметов и NPC
+│   └── CollisionShape3D (SphereShape3D) — radius: 2.0
+├── CombatController (Node) [C++: CombatController]
+├── HealthComponent (Node) [scripts/health_component.gd]
+├── StaminaComponent (Node) [scripts/stamina_component.gd]
+└── DodgeCooldown (Timer) — wait_time: 0.5
+```
+
+### npc_base.tscn
+
+Базовая сцена NPC, от которой наследуются конкретные типы. Содержит C++ NPCController для AI, NavigationAgent3D для навигации и Area3D для диалогов.
+
+```
+NPC (CharacterBody3D) [C++: NPCController]
+├── NPCModel (Node3D)
+│   ├── BodyMesh (MeshInstance3D)
+│   └── AnimationPlayer
+├── CollisionShape3D (CapsuleShape3D)
+├── NavigationAgent3D — avoidance_enabled: true
+├── DialogueTrigger (Area3D) [scripts/dialogue_trigger.gd]
+│   └── CollisionShape3D (SphereShape3D) — radius: 3.0
+├── DetectionArea (Area3D)
+│   └── CollisionShape3D (SphereShape3D) — radius: 8.0
+└── HealthComponent (Node) [scripts/health_component.gd]
+```
+
+### enemy_base.tscn
+
+Базовая сцена врага, от которой наследуются конкретные типы. Враги используют тот же NPCController, но с боевой конфигурацией (состояния Attack, Flee).
+
+```
+Enemy (CharacterBody3D) [C++: NPCController]
+├── EnemyModel (Node3D)
+│   ├── BodyMesh (MeshInstance3D)
+│   └── AnimationPlayer
+├── CollisionShape3D (CapsuleShape3D)
+├── NavigationAgent3D — avoidance_enabled: true
+├── Hurtbox (Area3D) [scripts/hurtbox_3d.gd]
+│   └── CollisionShape3D
+├── Hitbox (Area3D) [scripts/hitbox_3d.gd]
+│   └── CollisionShape3D — disabled by default
+├── DetectionArea (Area3D)
+│   └── CollisionShape3D (SphereShape3D)
+├── AttackRange (Area3D)
+│   └── CollisionShape3D (SphereShape3D)
+└── HealthComponent (Node) [scripts/health_component.gd]
+```
+
+### pickable_item.tscn
+
+Предмет, который можно подобрать в 3D-мире.
+
+```
+PickableItem (Area3D) [scripts/pickable_item.gd]
+├── ItemModel (MeshInstance3D)
+├── CollisionShape3D (SphereShape3D) — radius: 0.5
+├── GlowLight (OmniLight3D) — color зависит от редкости, range: 3.0
+└── SpinAnimation (AnimationPlayer) — вращение + левитация
+```
+
+### hud.tscn
+
+HUD — полностью GDScript/UI сцена. Содержит полоски здоровья и выносливости, индикаторы квестов, мини-карту и контейнер для диалогов и инвентаря.
+
+```
+HUD (CanvasLayer) [scripts/hud.gd]
+├── HealthBar (TextureProgressBar) — unique_name: %HealthBar
+├── StaminaBar (TextureProgressBar) — unique_name: %StaminaBar
+├── GoldLabel (Label) — unique_name: %GoldLabel
+├── QuestTracker (VBoxContainer) — unique_name: %QuestTracker
+├── InteractionPrompt (Label) — unique_name: %InteractionPrompt
+├── DayTimeIndicator (Label) — unique_name: %DayTimeIndicator
+├── DialoguePanel (Control) [scenes/dialogue_panel.tscn] — скрыта по умолчанию
+├── InventoryPanel (Control) [scenes/inventory_panel.tscn] — скрыта по умолчанию
+└── QuestLogPanel (Control) [scenes/quest_log_panel.tscn] — скрыта по умолчанию
+```
+
+## 2.3 Диаграмма классов
+
+Диаграмма классов показывает отношения между основными типами проекта. C++ классы (AdventureCharacter, CameraController, CombatController, NPCController, InventorySystem, QuestSystem, DayNightCycle) составляют ядро логики. GDScript менеджеры (GameManager, SaveManager, AudioManager, EconomyManager) обеспечивают высокоуровневую координацию.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     AUTOLOADS (GDScript Singletons)                  │
+│                                                                      │
+│  ┌──────────────┐  ┌───────────────┐  ┌───────────────────┐        │
+│  │  GameManager │  │ EconomyManager│  │   AudioManager    │        │
+│  │              │  │               │  │                   │        │
+│  │ is_paused    │  │ gold: int     │  │ _bgm_player       │        │
+│  │ player       │  │               │  │ _sfx_players[]    │        │
+│  │              │  │ add_gold()    │  │                   │        │
+│  │ pause_game() │  │ spend_gold()  │  │ play_sfx()        │        │
+│  │ resume_game()│  │ has_gold()    │  │ play_bgm()        │        │
+│  └──────┬───────┘  └───────┬───────┘  └─────────┬─────────┘        │
+│         │                  │                     │                   │
+│  ┌──────┴───────┐          │                     │                   │
+│  │  SaveManager │          │                     │                   │
+│  │              │          │                     │                   │
+│  │ save_game()  │          │                     │                   │
+│  │ load_game()  │          │                     │                   │
+│  └──────────────┘          │                     │                   │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────── C++ CORE (GDExtension) ─────────────────────┐
+│                                                                      │
+│  ┌────────────────────┐  ┌────────────────────┐  ┌───────────────┐  │
+│  │ AdventureCharacter │  │ CameraController   │  │CombatController│ │
+│  │ (CharacterBody3D)  │  │ (Node3D)           │  │  (Node)       │  │
+│  │                    │  │                    │  │               │  │
+│  │ move_speed         │  │ yaw, pitch         │  │ combo_step    │  │
+│  │ jump_velocity      │  │ smooth_speed       │  │ is_attacking  │  │
+│  │ fall_gravity       │  │ follow_target      │  │ is_blocking   │  │
+│  │ jump_gravity       │  │ camera_mode        │  │ is_dodging    │  │
+│  │                    │  │                    │  │               │  │
+│  │ _physics_process() │  │ _process()         │  │ light_attack()│  │
+│  │ _get_camera_input()│  │ set_mode()         │  │ heavy_attack()│  │
+│  │ set_move_speed()   │  │ transition_to()    │  │ dodge()       │  │
+│  └────────────────────┘  └────────────────────┘  │ block()       │  │
+│                                                    └───────────────┘  │
+│  ┌────────────────────┐  ┌────────────────────┐  ┌───────────────┐  │
+│  │  NPCController     │  │ InventorySystem    │  │  QuestSystem  │  │
+│  │ (CharacterBody3D)  │  │   (Node)           │  │   (Node)      │  │
+│  │                    │  │                    │  │               │  │
+│  │ current_state      │  │ item_counts        │  │ active_quests │  │
+│  │ detect_range       │  │ slots[]            │  │ quest_index   │  │
+│  │ attack_range       │  │ max_slots          │  │               │  │
+│  │ nav_agent          │  │                    │  │ start_quest() │  │
+│  │                    │  │ add_item()         │  │ update_obj()  │  │
+│  │ _transition_to()   │  │ remove_item()      │  │ complete()    │  │
+│  │ _update_patrol()   │  │ has_item()         │  │ get_state()   │  │
+│  │ _update_follow()   │  │ to_dict()          │  │ to_dict()     │  │
+│  │ _update_attack()   │  └────────────────────┘  └───────────────┘  │
+│  └────────────────────┘                                              │
+│  ┌────────────────────┐                                              │
+│  │  DayNightCycle     │                                              │
+│  │   (Node)           │                                              │
+│  │                    │                                              │
+│  │ current_time       │                                              │
+│  │ cycle_duration     │                                              │
+│  │ is_daytime         │                                              │
+│  │                    │                                              │
+│  │ _process()         │                                              │
+│  │ get_time_of_day()  │                                              │
+│  │ skip_to()          │                                              │
+│  └────────────────────┘                                              │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────── DATA LAYER (GDScript Resources) ─────────────┐
+│                                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────┐│
+│  │  ItemData    │  │  QuestData   │  │ DialogueData │  │EnemyData││
+│  │  (Resource)  │  │  (Resource)  │  │  (Resource)  │  │(Resource)││
+│  │              │  │              │  │              │  │         ││
+│  │ item_id      │  │ quest_id     │  │ dialogue_id  │  │ id      ││
+│  │ display_name │  │ title        │  │ lines[]      │  │ hp      ││
+│  │ item_type    │  │ objectives[] │  │              │  │ damage  ││
+│  │ max_stack    │  │ rewards{}    │  │              │  │ speed   ││
+│  │ effects[]    │  │ prereqs[]    │  │              │  │ behavior││
+│  └──────────────┘  └──────────────┘  └──────────────┘  └─────────┘│
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## 2.4 Поток данных
+
+Понимание потока данных критически важно для отладки и расширения проекта. Ниже показаны два ключевых сценария: бой и диалог+квест.
+
+### Сценарий 1: Игрок атакует врага
+
+```
+Игрок нажимает LMB
+        │
+        ▼
+CombatController.light_attack()  [C++]
+  ├── Проверяет: достаточно ли выносливости? (10 единиц)
+  ├── Устанавливает combo_step (1→2→3→сброс)
+  ├── Включает Hitbox (Area3D) на 0.2 сек
+  ├── Воспроизводит анимацию через AnimationPlayer
+  └── Тратит выносливость через StaminaComponent
+        │
+        ▼
+Hitbox.area_entered(Hurtbox)  [Signal]
+  ├── CombatController._on_hitbox_hit()  [C++]
+  │   ├── Вычисляет урон: (base + weapon) × combo_mult
+  │   ├── Вызывает HealthComponent.take_damage()
+  │   ├── Создаёт DamageNumber (сцена)
+  │   ├── Воспроизводит SFX через AudioManager
+  │   └── Если HP ≤ 0 → enemy_died signal
+        │
+        ▼
+HealthComponent.health_depleted  [Signal]
+  ├── NPCController._transition_to(DEAD)  [C++]
+  ├── DropLoot.spawn_loot()  [создаёт PickableItem]
+  ├── QuestSystem.on_event("kill", enemy_id)  [C++]
+  │   ├── Проверяет активные квесты с type="kill"
+  │   ├── Увеличивает current для совпадающих целей
+  │   └── Если все цели выполнены → quest_completed signal
+  └── EconomyManager.add_gold(reward)  [Signal → GDScript]
+        │
+        ▼
+HUD обновляет: HealthBar, GoldLabel, QuestTracker
+```
+
+### Сценарий 2: Диалог запускает квест
+
+```
+Игрок подходит к NPC → InteractionArea.body_entered
+        │
+        ▼
+HUD показывает "Press E to talk"  [GDScript]
+        │
+Игрок нажимает E
+        │
+        ▼
+DialogueTrigger.activate()  [GDScript]
+  ├── Проверяет: has_quest_available? (C++ через QuestSystem)
+  ├── Выбирает DialogueData на основе условий
+  └── Испускает dialogue_requested signal
+        │
+        ▼
+DialoguePanel.show_dialogue(data)  [GDScript]
+  ├── Показывает портрет, текст, варианты ответов
+  ├── Игрок выбирает вариант → choice_made signal
+  └── Если выбор ведёт к квесту → on_complete = "start_quest:forest_clear"
+        │
+        ▼
+QuestSystem.start_quest(quest_id)  [C++]
+  ├── Проверяет: prerequisites выполнены?
+  ├── Создаёт экземпляр QuestState
+  ├── Устанавливает state = IN_PROGRESS
+  └── Испускает quest_started signal
+        │
+        ▼
+HUD обновляет QuestTracker
+EconomyManager/NPC обновляют доступные диалоги
+```
+
+## 2.5 Паттерны проектирования
+
+Проект использует следующие паттерны, каждый из которых решает конкретную задачу:
+
+### Конечный автомат (FSM) — NPCController
+
+NPCController использует FSM для управления поведением NPC. Каждое состояние (Idle, Patrol, Follow, Flee, Attack, Stunned) реализует методы `enter()`, `update()` и `exit()`. Переходы управляются условиями: расстояние до игрока, уровень здоровья, наличие линии видимости. Реализация в C++ обеспечивает быстрое переключение для 10–20 NPC одновременно без падения FPS.
+
+```
+Idle ──(игрок в detect_range)──▶ Follow ──(игрок в attack_range)──▶ Attack
+ ▲                                  │                                  │
+ │                                  │(HP < 20%)                        │(игрок ушёл)
+ │                                  ▼                                  │
+ │                              Flee ◀───────────────────────────────┘
+ │                                  │
+ │  (игрок вышел из detect_range)   │(достиг точки бегства)
+ │                                  ▼
+ └──────────────────────────── Idle/Patrol
+```
+
+### Strategy — CombatController для комбо
+
+CombatController использует паттерн Strategy для комбо-цепочек. Разные оружия определяют разные последовательности ударов: меч — 3 лёгких + 1 тяжёлый, лук — быстрые выстрелы. Стратегия комбо определяется экипированным оружием и может быть заменена без изменения CombatController.
+
+### Observer — QuestSystem и диалоги
+
+QuestSystem реализует паттерн Observer: диалоговые триггеры подписаны на сигнал `quest_state_changed`, NPC обновляют доступные реплики при изменении состояния квеста. Это слабосвязанная архитектура: квестовая система не знает о конкретных NPC, а NPC не знают о внутренней логике квестов.
+
+### Data-View — ресурсы и UI
+
+Все данные определены как Resource (Data), а UI (View) подписан на сигналы об их изменении. InventoryPanel обновляется при сигнале `inventory_changed`, но не знает, откуда пришли предметы. DialoguePanel отображает DialogueData, но не проверяет условия — это делает C++ код.
+
+### Factory — создание предметов и врагов
+
+Предметы создаются фабричным методом: `ItemFactory.create_item(item_id)` загружает соответствующую сцену из ItemData.world_scene и настраивает параметры. Враги создаются `EnemySpawner.spawn(enemy_data)` на основе EnemyData. Фабрика изолирует создание объектов от бизнес-логики.
+
+## 2.6 Структура файлов проекта
+
+```
+project-5-3d-adventure/
+├── project.godot
+├── .gdextension                    # Регистрация C++ библиотеки
+├── src/                            # C++ исходники (GDExtension)
+│   ├── adventure_character.h
+│   ├── adventure_character.cpp
+│   ├── camera_controller.h
+│   ├── camera_controller.cpp
+│   ├── combat_controller.h
+│   ├── combat_controller.cpp
+│   ├── npc_controller.h
+│   ├── npc_controller.cpp
+│   ├── inventory_system.h
+│   ├── inventory_system.cpp
+│   ├── quest_system.h
+│   ├── quest_system.cpp
+│   ├── day_night_cycle.h
+│   ├── day_night_cycle.cpp
+│   ├── register_types.h
+│   ├── register_types.cpp
+│   └── SConstruct
+├── resources/                      # Data Layer (GDScript Resources)
+│   ├── item_data.gd
+│   ├── quest_data.gd
+│   ├── quest_objective.gd
+│   ├── dialogue_data.gd
+│   ├── dialogue_line.gd
+│   ├── dialogue_choice.gd
+│   ├── enemy_data.gd
+│   └── npc_data.gd
+├── scripts/                        # Logic & Persistence Layer
+│   ├── main.gd
+│   ├── game_manager.gd             # Autoload
+│   ├── economy_manager.gd          # Autoload
+│   ├── audio_manager.gd            # Autoload
+│   ├── save_manager.gd             # Autoload
+│   ├── health_component.gd
+│   ├── stamina_component.gd
+│   ├── hurtbox_3d.gd
+│   ├── hitbox_3d.gd
+│   ├── pickable_item.gd
+│   └── dialogue_trigger.gd
+├── scenes/                         # Presentation Layer
+│   ├── world.tscn
+│   ├── player.tscn
+│   ├── npc_base.tscn
+│   ├── enemy_base.tscn
+│   ├── pickable_item.tscn
+│   ├── save_point.tscn
+│   ├── hud.tscn
+│   ├── dialogue_panel.tscn
+│   ├── inventory_panel.tscn
+│   └── quest_log_panel.tscn
+└── assets/
+    ├── models/                     # 3D модели (.glb/.obj)
+    ├── textures/                   # Текстуры
+    ├── sounds/                     # Звуковые файлы (.wav/.ogg)
+    └── data/                       # JSON для диалогов (опционально)
+```
+
+---

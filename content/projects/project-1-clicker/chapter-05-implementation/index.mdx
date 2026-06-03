@@ -1,0 +1,681 @@
+---
+title: "Глава 5: Реализация"
+project: "project-1-clicker"
+chapter: "chapter-05-implementation"
+order: 5
+xp: 20
+estimatedTime: 120
+tags: []
+---
+
+
+Пришло время писать код. В этой главе мы реализуем все компоненты проекта от моделей данных до визуальных эффектов. Каждый скрипт будет представлен полностью, с комментариями, объясняющими не только «что делает код», но и «почему он написан именно так». Рекомендуется создавать файлы именно в том порядке, в котором они представлены — каждый следующий компонент опирается на предыдущие.
+
+## 5.1 UpgradeData — модель данных апгрейда
+
+`UpgradeData` — это чистая модель данных, расширяющая `Resource`. Мы используем `Resource` в качестве базового класса вместо простого `class_name` по нескольким причинам. Во-первых, Resource поддерживает экспорт свойств через `@export`, что позволяет редактировать апгрейды в Inspector. Во-вторых, Resource можно сохранить как .tres-файл и загружать динамически. В-третьих, Resource поддерживает сериализацию «из коробки», что упрощает сохранение. Если бы мы использовали обычный класс (RefCounted), нам пришлось бы реализовывать все эти механизмы вручную.
+
+Создайте файл `scripts/upgrade_data.gd`:
+
+```gdscript
+# scripts/upgrade_data.gd
+class_name UpgradeData
+extends Resource
+
+enum UpgradeType {
+    CLICK_POWER,     # Увеличивает доход за клик
+    AUTO_CLICK,      # Добавляет пассивный доход
+    MULTIPLIER,      # Умножает весь доход
+}
+
+@export var id: String = ""
+@export var display_name: String = ""
+@export var description: String = ""
+@export var type: UpgradeType = UpgradeType.CLICK_POWER
+@export var base_cost: int = 10
+@export var cost_multiplier: float = 1.5
+@export var base_value: float = 1.0
+@export var max_level: int = -1  # -1 = без лимита
+
+var level: int = 0  # Текущий уровень (не экспортируем — runtime-состояние)
+
+
+func get_cost() -> int:
+    return int(base_cost * pow(cost_multiplier, level))
+
+
+func can_afford(player_currency: int) -> bool:
+    return player_currency >= get_cost() and (max_level == -1 or level < max_level)
+
+
+func purchase() -> void:
+    level += 1
+```
+
+Разберём ключевые моменты. Аннотация `@export` помечает свойства, которые будут видны и редактируемы в Inspector. Это значит, что вы можете создать .tres-файл с конфигурацией апгрейда и настраивать его параметры, не трогая код. Свойство `level` НЕ помечено `@export`, потому что это runtime-состояние — оно изменяется в процессе игры и не должно быть предустановлено в ресурсе.
+
+Функция `get_cost()` вычисляет текущую стоимость апгрейда на основе его уровня. Формула `base_cost × cost_multiplier^level` обеспечивает экспоненциальный рост: каждый следующий уровень стоит дороже предыдущего. Результат `pow()` — `float`, поэтому мы оборачиваем его в `int()` для получения целого числа.
+
+Функция `can_afford()` проверяет два условия: достаточно ли валюты и не достигнут ли максимальный уровень. Значение `max_level = -1` означает отсутствие лимита — апгрейд можно покупать бесконечно. Если вы хотите создать апгрейд с лимитом (например, «Множитель дохода» максимум 3 уровня), установите `max_level = 3`.
+
+## 5.2 AchievementData — модель данных достижения
+
+Как и UpgradeData, AchievementData расширяет Resource для поддержки экспорта и сериализации. Однако у достижений есть особенность: условие разблокировки — это функция (Callable), а не данные. Мы не можем экспортировать Callable в Inspector, поэтому настройка достижений происходит программно через метод `setup()`.
+
+Создайте файл `scripts/achievement_data.gd`:
+
+```gdscript
+# scripts/achievement_data.gd
+class_name AchievementData
+extends Resource
+
+@export var id: String = ""
+@export var display_name: String = ""
+@export var description: String = ""
+@export var reward: int = 0
+
+var condition_callback: Callable  # () -> bool
+var unlocked: bool = false
+
+
+func setup(p_id: String, p_name: String, p_desc: String, p_callback: Callable, p_reward: int = 0) -> void:
+    id = p_id
+    display_name = p_name
+    description = p_desc
+    condition_callback = p_callback
+    reward = p_reward
+
+
+func check() -> bool:
+    if unlocked:
+        return false
+    if condition_callback.is_valid() and condition_callback.call():
+        unlocked = true
+        return true
+    return false
+```
+
+Метод `check()` реализует логику «одноразовой проверки»: если достижение уже разблокировано, оно сразу возвращает `false`, не вызывая callback. Это важно для производительности — проверки достижений вызываются при каждом изменении валюты, и мы не хотим выполнять лишнюю работу. Проверка `condition_callback.is_valid()` гарантирует, что мы не вызовем несуществующую функцию — это может произойти, если объект, к которому привязан callback, был удалён.
+
+## 5.3 GameManager — центральная логика
+
+GameManager — это мозг нашей игры. Он управляет всем состоянием: валютой, апгрейдами, достижениями, статистикой. GameManager является Autoload-синглтоном, что гарантирует его глобальную доступность и единственность. Важный принцип: GameManager содержит ТОЛЬКО логику и данные. Он ничего не знает об интерфейсе, визуальных эффектах или вводе — за эти аспекты отвечают другие компоненты.
+
+Создайте файл `scripts/game_manager.gd`:
+
+```gdscript
+# scripts/game_manager.gd
+extends Node
+
+signal currency_changed(new_amount: int)
+signal stats_updated()
+signal achievement_unlocked(achievement: AchievementData)
+signal upgrade_purchased(upgrade: UpgradeData)
+
+var currency: int = 0
+var click_power: int = 1
+var auto_click_power: int = 0
+var total_clicks: int = 0
+var total_currency_earned: int = 0
+var total_upgrades: int = 0
+
+var upgrades: Dictionary = {}  # String -> UpgradeData
+var achievements: Array[AchievementData] = []
+
+
+func _ready() -> void:
+    init_upgrades()
+    init_achievements()
+    SaveManager.load_game()
+
+
+func init_upgrades() -> void:
+    var click_upgrade_1 := UpgradeData.new()
+    click_upgrade_1.id = "click_power_1"
+    click_upgrade_1.display_name = "Усиление клика"
+    click_upgrade_1.description = "+1 к силе клика"
+    click_upgrade_1.type = UpgradeData.UpgradeType.CLICK_POWER
+    click_upgrade_1.base_cost = 10
+    click_upgrade_1.cost_multiplier = 1.5
+    click_upgrade_1.base_value = 1.0
+    upgrades[click_upgrade_1.id] = click_upgrade_1
+
+    var auto_upgrade_1 := UpgradeData.new()
+    auto_upgrade_1.id = "auto_click_1"
+    auto_upgrade_1.display_name = "Автокликер"
+    auto_upgrade_1.description = "+1 в секунду автоматически"
+    auto_upgrade_1.type = UpgradeData.UpgradeType.AUTO_CLICK
+    auto_upgrade_1.base_cost = 50
+    auto_upgrade_1.cost_multiplier = 1.6
+    auto_upgrade_1.base_value = 1.0
+    upgrades[auto_upgrade_1.id] = auto_upgrade_1
+
+    var multiplier_1 := UpgradeData.new()
+    multiplier_1.id = "multiplier_1"
+    multiplier_1.display_name = "Множитель дохода"
+    multiplier_1.description = "×1.5 ко всему доходу"
+    multiplier_1.type = UpgradeData.UpgradeType.MULTIPLIER
+    multiplier_1.base_cost = 500
+    multiplier_1.cost_multiplier = 2.0
+    multiplier_1.base_value = 1.5
+    upgrades[multiplier_1.id] = multiplier_1
+
+    var click_upgrade_2 := UpgradeData.new()
+    click_upgrade_2.id = "click_power_2"
+    click_upgrade_2.display_name = "Мощный клик"
+    click_upgrade_2.description = "+5 к силе клика"
+    click_upgrade_2.type = UpgradeData.UpgradeType.CLICK_POWER
+    click_upgrade_2.base_cost = 200
+    click_upgrade_2.cost_multiplier = 1.55
+    click_upgrade_2.base_value = 5.0
+    upgrades[click_upgrade_2.id] = click_upgrade_2
+
+    var auto_upgrade_2 := UpgradeData.new()
+    auto_upgrade_2.id = "auto_click_2"
+    auto_upgrade_2.display_name = "Фабрика монет"
+    auto_upgrade_2.description = "+10 монет/сек"
+    auto_upgrade_2.type = UpgradeData.UpgradeType.AUTO_CLICK
+    auto_upgrade_2.base_cost = 1000
+    auto_upgrade_2.cost_multiplier = 1.7
+    auto_upgrade_2.base_value = 10.0
+    upgrades[auto_upgrade_2.id] = auto_upgrade_2
+
+    var multiplier_2 := UpgradeData.new()
+    multiplier_2.id = "multiplier_2"
+    multiplier_2.display_name = "Золотой мультипликатор"
+    multiplier_2.description = "×2.0 ко всему доходу"
+    multiplier_2.type = UpgradeData.UpgradeType.MULTIPLIER
+    multiplier_2.base_cost = 5000
+    multiplier_2.cost_multiplier = 2.5
+    multiplier_2.base_value = 2.0
+    upgrades[multiplier_2.id] = multiplier_2
+
+
+func init_achievements() -> void:
+    achievements = [
+        AchievementData.new().setup("first_click", "Первый клик", "Сделайте свой первый клик", func(): return total_clicks >= 1, 0),
+        AchievementData.new().setup("click_100", "Сто кликов", "Сделайте 100 кликов", func(): return total_clicks >= 100, 10),
+        AchievementData.new().setup("click_1000", "Тысяча кликов", "Сделайте 1000 кликов", func(): return total_clicks >= 1000, 100),
+        AchievementData.new().setup("earn_100", "Первые сбережения", "Накопите 100 монет", func(): return total_currency_earned >= 100, 5),
+        AchievementData.new().setup("earn_10k", "Богатство", "Заработайте 10 000 монет", func(): return total_currency_earned >= 10_000, 500),
+        AchievementData.new().setup("earn_1m", "Миллионер", "Заработайте 1 000 000 монет", func(): return total_currency_earned >= 1_000_000, 10_000),
+        AchievementData.new().setup("first_auto", "Автоматизация", "Купите первый автокликер", func(): return auto_click_power >= 1, 0),
+        AchievementData.new().setup("upgrade_10", "Апгрейд-мастер", "Купите 10 апгрейдов", func(): return total_upgrades >= 10, 200),
+    ]
+
+
+func on_click() -> void:
+    total_clicks += 1
+    add_currency(click_power)
+
+
+func add_currency(amount: int) -> void:
+    currency += amount
+    total_currency_earned += amount
+    currency_changed.emit(currency)
+    stats_updated.emit()
+    check_achievements()
+
+
+func purchase_upgrade(id: String) -> bool:
+    if not upgrades.has(id):
+        return false
+    var upgrade: UpgradeData = upgrades[id]
+    var cost: int = upgrade.get_cost()
+    if not upgrade.can_afford(currency):
+        return false
+
+    currency -= cost
+    upgrade.purchase()
+    total_upgrades += 1
+    apply_upgrade_effect(upgrade)
+    upgrade_purchased.emit(upgrade)
+    currency_changed.emit(currency)
+    stats_updated.emit()
+    check_achievements()
+    return true
+
+
+func apply_upgrade_effect(upgrade: UpgradeData) -> void:
+    match upgrade.type:
+        UpgradeData.UpgradeType.CLICK_POWER:
+            click_power += int(upgrade.base_value)
+        UpgradeData.UpgradeType.AUTO_CLICK:
+            auto_click_power += int(upgrade.base_value)
+        UpgradeData.UpgradeType.MULTIPLIER:
+            click_power = int(click_power * upgrade.base_value)
+            auto_click_power = int(auto_click_power * upgrade.base_value)
+
+
+func check_achievements() -> void:
+    for achievement in achievements:
+        if achievement.check():
+            if achievement.reward > 0:
+                add_currency(achievement.reward)
+            achievement_unlocked.emit(achievement)
+
+
+func calculate_offline_progress() -> void:
+    var last_save_time: int = SaveManager.get_last_save_time()
+    if last_save_time == 0:
+        return
+    var current_time: int = int(Time.get_unix_time_from_system())
+    var elapsed_seconds: int = current_time - last_save_time
+    if elapsed_seconds <= 0 or auto_click_power <= 0:
+        return
+    var capped_seconds: int = mini(elapsed_seconds, 8 * 3600)
+    var offline_earnings: int = auto_click_power * capped_seconds
+    currency += offline_earnings
+    total_currency_earned += offline_earnings
+    currency_changed.emit(currency)
+
+
+func get_save_data() -> Dictionary:
+    var upgrades_data: Dictionary = {}
+    for id in upgrades:
+        upgrades_data[id] = upgrades[id].level
+    return {
+        "version": SaveManager.SAVE_VERSION,
+        "currency": currency,
+        "click_power": click_power,
+        "auto_click_power": auto_click_power,
+        "total_clicks": total_clicks,
+        "total_currency_earned": total_currency_earned,
+        "total_upgrades": total_upgrades,
+        "upgrades": upgrades_data,
+        "achievements": achievements.filter(func(a): return a.unlocked).map(func(a): return a.id),
+        "last_save_time": int(Time.get_unix_time_from_system()),
+    }
+
+
+func apply_save_data(data: Dictionary) -> void:
+    currency = int(data.get("currency", 0))
+    click_power = int(data.get("click_power", 1))
+    auto_click_power = int(data.get("auto_click_power", 0))
+    total_clicks = int(data.get("total_clicks", 0))
+    total_currency_earned = int(data.get("total_currency_earned", 0))
+    total_upgrades = int(data.get("total_upgrades", 0))
+    if data.has("upgrades"):
+        for id in data.upgrades:
+            if upgrades.has(id):
+                upgrades[id].level = int(data.upgrades[id])
+    if data.has("achievements"):
+        for achievement in achievements:
+            if achievement.id in data.achievements:
+                achievement.unlocked = true
+
+
+func reset_game() -> void:
+    currency = 0
+    click_power = 1
+    auto_click_power = 0
+    total_clicks = 0
+    total_currency_earned = 0
+    total_upgrades = 0
+    for id in upgrades:
+        upgrades[id].level = 0
+    for achievement in achievements:
+        achievement.unlocked = false
+    currency_changed.emit(currency)
+    stats_updated.emit()
+    SaveManager.save_game()
+```
+
+Разберём ключевые методы подробнее.
+
+**`init_achievements()`** использует лямбда-функции (анонимные функции через `func():`) для определения условий достижений. Это элегантное решение: условие инкапсулировано внутри определения достижения, и при добавлении нового достижения не нужно создавать отдельную функцию. Обратите внимание, что лямбды захватывают переменные `total_clicks`, `total_currency_earned`, `auto_click_power` и `total_upgrades` по ссылке — они всегда читают актуальное значение из GameManager.
+
+**`apply_upgrade_effect()`** использует конструкцию `match` для обработки разных типов апгрейдов. Обратите внимание на тип MULTIPLIER: он умножает ОБА показателя дохода — и click_power, и auto_click_power. Это создаёт синергетический эффект: покупка множителя усиливает все источники дохода одновременно, что делает его ценность экспоненциально растущей с каждым новым источником.
+
+**`check_achievements()`** вызывает `add_currency()` для наград, что рекурсивно вызовет `check_achievements()` снова. Это безопасно, потому что `achievement.check()` возвращает `false` для уже разблокированных достижений, предотвращая бесконечную рекурсию. Награда за достижение может разблокировать другое достижение (например, награда в 10 монет может перевести total_currency_earned через порог).
+
+**`get_save_data()`** формирует словарь для сериализации. Мы сохраняем только уровни апгрейдов (не полные объекты) и ID разблокированных достижений. Это делает формат сохранения компактным и устойчивым к изменениям в конфигурации — если вы измените base_cost апгрейда в коде, существующие сохранения не пострадают.
+
+**`apply_save_data()`** использует `data.get("key", default)` с дефолтными значениями — это делает загрузку устойчивой к отсутствию полей в старых сохранениях. Каждый считанный параметр оборачивается в `int()` для гарантии корректного типа.
+
+## 5.4 SaveManager — подсистема сохранения
+
+SaveManager выделен в отдельный Autoload по причинам чистой архитектуры. GameManager управляет игровым состоянием, но не должен знать, как именно это состояние сохраняется. SaveManager, в свою очередь, не знает семантики сохраняемых данных — он просто сериализует Dictionary в JSON и записывает в файл. Такое разделение позволяет в будущем заменить JSON на бинарный формат, шифрование или даже удалённое хранилище без единого изменения в GameManager.
+
+Создайте файл `scripts/save_manager.gd`:
+
+```gdscript
+# scripts/save_manager.gd
+extends Node
+
+const SAVE_PATH: String = "user://save_game.json"
+const SAVE_VERSION: int = 1
+
+signal save_completed(success: bool)
+signal load_completed(success: bool)
+
+
+func _notification(what: int) -> void:
+    if what == NOTIFICATION_WM_CLOSE_REQUEST:
+        save_game()
+        get_tree().quit()
+    elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+        save_game()
+
+
+func save_game() -> bool:
+    var file: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+    if file == null:
+        push_error("SaveManager: не удалось открыть файл для сохранения: %s" % FileAccess.get_open_error())
+        save_completed.emit(false)
+        return false
+    var data: Dictionary = GameManager.get_save_data()
+    var json_string: String = JSON.stringify(data, "\t")
+    file.store_string(json_string)
+    file.close()
+    save_completed.emit(true)
+    return true
+
+
+func load_game() -> bool:
+    if not FileAccess.file_exists(SAVE_PATH):
+        load_completed.emit(false)
+        return false
+    var file: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.READ)
+    if file == null:
+        load_completed.emit(false)
+        return false
+    var json_string: String = file.get_as_text()
+    file.close()
+    var json: JSON = JSON.new()
+    var result: Error = json.parse(json_string)
+    if result != OK:
+        push_error("SaveManager: ошибка парсинга JSON: %s" % json.get_error_message())
+        load_completed.emit(false)
+        return false
+    var data: Dictionary = json.data
+    if data.get("version", 0) != SAVE_VERSION:
+        push_warning("SaveManager: несовместимая версия сохранения")
+        load_completed.emit(false)
+        return false
+    GameManager.apply_save_data(data)
+    GameManager.calculate_offline_progress()
+    load_completed.emit(true)
+    return true
+
+
+func get_last_save_time() -> int:
+    if not FileAccess.file_exists(SAVE_PATH):
+        return 0
+    var file: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.READ)
+    if file == null:
+        return 0
+    var json_string: String = file.get_as_text()
+    file.close()
+    var json: JSON = JSON.new()
+    if json.parse(json_string) != OK:
+        return 0
+    var data: Dictionary = json.data
+    return int(data.get("last_save_time", 0))
+```
+
+Разберём ключевые решения.
+
+**`_notification()`** — это метод Godot, вызываемый при получении узлом системных уведомлений. `NOTIFICATION_WM_CLOSE_REQUEST` отправляется, когда игрок закрывает окно игры (кнопка X, Alt+F4). `NOTIFICATION_APPLICATION_FOCUS_OUT` отправляется, когда окно теряет фокус (игрок переключился на другое приложение). В обоих случаях мы сохраняем игру — это гарантирует, что прогресс не теряется даже при нештатном закрытии. Обратите внимание: при `NOTIFICATION_WM_CLOSE_REQUEST` мы сами вызываем `get_tree().quit()`, потому что Godot не закрывает приложение автоматически при получении этого уведомления.
+
+**Версионность сохранений:** Поле `version` в данных сохранения позволяет обрабатывать несовместимые форматы. Если в будущей версии вы измените структуру данных, увеличение `SAVE_VERSION` и проверка в `load_game()` предотвратят загрузку повреждённых файлов. Вместо краша игрок увидит предупреждение в консоли и начнёт с чистого состояния.
+
+**`get_last_save_time()`** — специальный метод для оффлайн-прогресса. Он читает файл сохранения отдельно от основной загрузки, чтобы получить временную метку последнего сохранения. Это необходимо, потому что `calculate_offline_progress()` вызывается после `apply_save_data()`, и нам нужно знать, сколько времени прошло с момента последнего сохранения.
+
+## 5.5 Main — главная сцена
+
+Скрипт Main отвечает исключительно за визуальное представление и обработку ввода. Здесь НЕТ бизнес-логики — всё, что связано с правилами игры, делегируется GameManager. Main лишь подключается к сигналам GameManager и обновляет UI в ответ. Это означает, что если вы захотите полностью переделать интерфейс (например, перейти от вертикальной компоновки к горизонтальной), вам не придётся трогать ни одной строки в GameManager.
+
+Создайте файл `scripts/main.gd`:
+
+```gdscript
+# scripts/main.gd
+extends Node2D
+
+const FloatingTextScene: PackedScene = preload("res://scenes/floating_text.tscn")
+const ConfettiScene: PackedScene = preload("res://scenes/confetti_particles.tscn")
+
+@onready var click_button: TextureButton = %ClickButton
+@onready var currency_label: Label = %CurrencyLabel
+@onready var per_click_label: Label = %PerClickLabel
+@onready var auto_income_label: Label = %AutoIncomeLabel
+@onready var total_clicks_label: Label = %TotalClicksLabel
+@onready var upgrade_container: VBoxContainer = %UpgradeContainer
+@onready var auto_click_timer: Timer = %AutoClickTimer
+@onready var effects_layer: CanvasLayer = %EffectsLayer
+
+
+func _ready() -> void:
+    # Подключаем сигналы GameManager
+    GameManager.currency_changed.connect(_on_currency_changed)
+    GameManager.stats_updated.connect(_on_stats_updated)
+    GameManager.achievement_unlocked.connect(_on_achievement_unlocked)
+    GameManager.upgrade_purchased.connect(_on_upgrade_purchased)
+
+    # Подключаем UI-сигналы
+    click_button.pressed.connect(_on_click_button_pressed)
+    auto_click_timer.timeout.connect(_on_auto_click_timeout)
+
+    # Создаём элементы магазина
+    _populate_shop()
+
+    # Запускаем таймер автокликера
+    auto_click_timer.start(1.0)
+
+    # Обновляем весь UI
+    update_ui()
+
+
+func _on_click_button_pressed() -> void:
+    GameManager.on_click()
+    spawn_floating_text("+%d" % GameManager.click_power)
+    click_button.scale = Vector2(0.9, 0.9)
+
+
+func _process(delta: float) -> void:
+    if click_button.scale.x < 1.0:
+        click_button.scale = click_button.scale.move_toward(Vector2.ONE, 5.0 * delta)
+
+
+func _on_auto_click_timeout() -> void:
+    if GameManager.auto_click_power > 0:
+        GameManager.add_currency(GameManager.auto_click_power)
+        spawn_floating_text("+%d (авто)" % GameManager.auto_click_power)
+
+
+func _on_currency_changed(new_amount: int) -> void:
+    currency_label.text = format_number(new_amount)
+    update_upgrade_availability()
+
+
+func _on_stats_updated() -> void:
+    per_click_label.text = "За клик: %d" % GameManager.click_power
+    auto_income_label.text = "Авто: %d/сек" % GameManager.auto_click_power
+    total_clicks_label.text = "Кликов: %d" % GameManager.total_clicks
+
+
+func _on_achievement_unlocked(achievement: AchievementData) -> void:
+    spawn_floating_text("🏆 %s!" % achievement.display_name)
+    spawn_confetti()
+    # TODO: показать всплывающее уведомление о достижении
+
+
+func _on_upgrade_purchased(upgrade: UpgradeData) -> void:
+    # Обновляем все элементы магазина
+    for child in upgrade_container.get_children():
+        if child is UpgradeItem:
+            child.refresh()
+    SaveManager.save_game()
+
+
+func _populate_shop() -> void:
+    for id in GameManager.upgrades:
+        var upgrade: UpgradeData = GameManager.upgrades[id]
+        var item: UpgradeItem = preload("res://scenes/upgrade_item.tscn").instantiate()
+        item.setup(upgrade, _on_upgrade_buy_requested)
+        upgrade_container.add_child(item)
+
+
+func _on_upgrade_buy_requested(upgrade: UpgradeData) -> void:
+    GameManager.purchase_upgrade(upgrade.id)
+
+
+func update_ui() -> void:
+    _on_currency_changed(GameManager.currency)
+    _on_stats_updated()
+
+
+func update_upgrade_availability() -> void:
+    for child in upgrade_container.get_children():
+        if child is UpgradeItem:
+            child.update_availability(GameManager.currency)
+
+
+func spawn_floating_text(text: String) -> void:
+    var floating: Label = FloatingTextScene.instantiate()
+    floating.text = text
+    floating.position = click_button.global_position + Vector2(
+        randf_range(-30, 30),
+        randf_range(-20, 10)
+    )
+    effects_layer.add_child(floating)
+
+
+func spawn_confetti() -> void:
+    var particles: GPUParticles2D = ConfettiScene.instantiate()
+    particles.position = click_button.global_position
+    particles.emitting = true
+    effects_layer.add_child(particles)
+    get_tree().create_timer(2.0).timeout.connect(func(): particles.queue_free())
+
+
+func format_number(value: int) -> String:
+    if value >= 1_000_000_000:
+        return "%.2fB" % (value / 1_000_000_000.0)
+    elif value >= 1_000_000:
+        return "%.2fM" % (value / 1_000_000.0)
+    elif value >= 1_000:
+        return "%.1fK" % (value / 1_000.0)
+    else:
+        return "%d" % value
+```
+
+Разберём ключевые моменты.
+
+**`_ready()`** — точка входа. Сначала мы подключаем сигналы GameManager (реактивное обновление), затем UI-сигналы (обработка ввода), затем создаём элементы магазина и запускаем таймер. Порядок важен: если запустить таймер до подключения сигналов, первый тик автокликера может не обновить UI.
+
+**`_on_click_button_pressed()`** — обработчик клика. Обратите внимание: мы вызываем `GameManager.on_click()`, а не `add_currency()` напрямую. Это гарантирует, что все побочные эффекты (инкремент total_clicks, проверка достижений) выполняются корректно. Визуальные эффекты (всплывающее число, анимация кнопки) добавляются после вызова логики — они не влияют на игровой процесс.
+
+**`_process(delta)`** — анимация возврата кнопки к нормальному размеру. `move_toward()` плавно интерполирует текущий масштаб к `Vector2.ONE` со скоростью 5.0 в секунду. Умножение на `delta` гарантирует одинаковую скорость анимации при любой частоте кадров. Это фундаментальный принцип анимации в Godot: всегда умножайте скорости на delta.
+
+**`_populate_shop()`** — динамическое создание элементов магазина. Для каждого апгрейда в GameManager мы создаём экземпляр UpgradeItem и передаём ему данные и callback. Паттерн делегирования через Callable означает, что UpgradeItem не зависит от GameManager — он просто вызывает переданную функцию.
+
+**`format_number()`** — утилита для форматирования больших чисел. Принимает `int`, возвращает `String` с суффиксами K/M/B. Обратите внимание на деление на `float`-литералы (`1_000_000_000.0`): это даёт результат `float`, который форматируется с нужным числом знаков после запятой.
+
+## 5.6 UpgradeItem — элемент магазина
+
+UpgradeItem — это переиспользуемый компонент для отображения одного апгрейда в магазине. Он получает данные (UpgradeData) и функцию обратного вызова (Callable) через метод `setup()`. Этот паттерн делегирования означает, что UpgradeItem полностью независим от GameManager — его можно использовать с любым источником данных.
+
+Создайте файл `scripts/upgrade_item.gd`:
+
+```gdscript
+# scripts/upgrade_item.gd
+extends HBoxContainer
+
+var data: UpgradeData
+var purchase_callback: Callable
+
+@onready var name_label: Label = $InfoSection/NameLabel
+@onready var desc_label: Label = $InfoSection/DescLabel
+@onready var cost_label: Label = $CostLabel
+@onready var level_label: Label = $LevelLabel
+@onready var buy_button: Button = $BuyButton
+
+
+func setup(upgrade_data: UpgradeData, callback: Callable) -> void:
+    data = upgrade_data
+    purchase_callback = callback
+    name_label.text = data.display_name
+    desc_label.text = data.description
+    buy_button.pressed.connect(_on_buy_pressed)
+    refresh()
+
+
+func refresh() -> void:
+    cost_label.text = "Стоимость: %s" % format_number(data.get_cost())
+    level_label.text = "Уровень: %d" % data.level
+
+
+func update_availability(player_currency: int) -> void:
+    buy_button.disabled = not data.can_afford(player_currency)
+
+
+func _on_buy_pressed() -> void:
+    if purchase_callback.is_valid():
+        purchase_callback.call(data)
+
+
+func format_number(value: int) -> String:
+    if value >= 1_000_000_000:
+        return "%.2fB" % (value / 1_000_000_000.0)
+    elif value >= 1_000_000:
+        return "%.2fM" % (value / 1_000_000.0)
+    elif value >= 1_000:
+        return "%.1fK" % (value / 1_000.0)
+    else:
+        return "%d" % value
+```
+
+Метод `setup()` вызывается один раз при создании элемента (в `_populate_shop()` Main). Он сохраняет данные, подключает сигнал кнопки и выполняет первичное обновление. Метод `refresh()` вызывается после каждой покупки для обновления стоимости и уровня. Метод `update_availability()` вызывается при каждом изменении валюты для включения/отключения кнопки покупки.
+
+Обратите внимание: `format_number()` дублируется в main.gd и upgrade_item.gd. В реальном проекте стоит вынести его в утилитарный класс (например, `StringUtils`), но для учебного проекта дублирование допустимо — оно упрощает понимание каждого файла в отдельности.
+
+## 5.7 FloatingText — всплывающие числа
+
+FloatingText — это простой визуальный эффект: текстовое число, которое появляется при клике, поднимается вверх, увеличивается в масштабе и затухает. Это чисто визуальный компонент без бизнес-логики — он получает текст извне и управляет только собственной анимацией.
+
+Создайте файл `scripts/floating_text.gd`:
+
+```gdscript
+# scripts/floating_text.gd
+extends Label
+
+var velocity: Vector2 = Vector2(0, -80)
+var lifetime: float = 1.0
+var elapsed: float = 0.0
+
+
+func _process(delta: float) -> void:
+    position += velocity * delta
+    velocity.x = move_toward(velocity.x, 0, 50 * delta)
+    elapsed += delta
+    var progress: float = elapsed / lifetime
+    modulate.a = 1.0 - progress
+    scale = Vector2.ONE * (1.0 + 0.3 * progress)
+    if elapsed >= lifetime:
+        queue_free()
+```
+
+Каждый кадр мы обновляем позицию (движение вверх), затухание (уменьшение прозрачности) и масштаб (небольшое увеличение). Переменная `progress` нормализует время от 0 до 1, что упрощает расчёты. Когда `elapsed` достигает `lifetime`, узел удаляется через `queue_free()`. Метод `queue_free()` помечает узел для удаления в конце текущего кадра — это безопаснее, чем `free()`, потому что другие узлы могут ещё ссылаться на этот в текущем кадре.
+
+## 5.8 Autoload настройка
+
+Теперь, когда скрипты GameManager и SaveManager готовы, настроим их как глобальные синглтоны. Этот шаг критически важен — без него обращения к `GameManager.currency` будут вызывать ошибку «Identifier not found».
+
+1. Откройте **Project → Project Settings** (Проект → Настройки проекта).
+2. Перейдите на вкладку **Autoload**.
+3. Добавьте `scripts/game_manager.gd`:
+   - Нажмите на иконку папки рядом с полем **Path**.
+   - Выберите `res://scripts/game_manager.gd`.
+   - Поле **Node Name** автоматически заполнится как `GameManager`. Если нет — введите вручную.
+   - Убедитесь, что **Enabled** включено.
+   - Нажмите **Add**.
+4. Добавьте `scripts/save_manager.gd`:
+   - Аналогично выберите `res://scripts/save_manager.gd`.
+   - Node Name: `SaveManager`.
+   - Нажмите **Add**.
+5. Проверьте порядок в списке Autoload: **GameManager должен быть выше SaveManager**. Порядок сверху вниз — это порядок инициализации при запуске игры. SaveManager в своём `_ready()` вызывает `GameManager.get_save_data()`, поэтому GameManager должен быть инициализирован первым. Если порядок неправильный, используйте стрелки вверх/вниз для перемещения.
+
+Почему порядок важен? Autoload-узлы добавляются в дерево сцены в порядке, определённом в списке. Когда SaveManager вызывает `SaveManager.load_game()` в своём `_ready()`, он обращается к `GameManager.get_save_data()` и `GameManager.apply_save_data()`. Если GameManager ещё не инициализирован, эти обращения вызовут ошибку. Правильный порядок гарантирует, что GameManager готов к моменту, когда SaveManager начинает свою работу.
+
+---

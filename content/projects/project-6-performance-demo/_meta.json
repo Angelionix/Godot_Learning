@@ -1,0 +1,54 @@
+{
+  "title": "Демо производительности",
+  "projectSlug": "project-6-performance-demo",
+  "order": 6,
+  "difficulty": "⭐⭐⭐⭐⭐+ Экспертный",
+  "language": "C++",
+  "description": "Создайте демо производительности с ECS, многопоточностью, compute-шейдерами и профилированием — от GDScript до C++.",
+  "tags": [
+    "ECS",
+    "Многопоточность",
+    "Compute-шейдеры",
+    "Профилирование",
+    "C++",
+    "Оптимизация",
+    "Бенчмарки"
+  ],
+  "chapters": [
+    {
+      "slug": "introduction",
+      "title": "Введение",
+      "order": 0,
+      "xp": 5,
+      "estimatedTime": 10
+    },
+    {
+      "slug": "chapter-01-game-design",
+      "title": "Глава 1: Геймдизайн",
+      "order": 1,
+      "xp": 15,
+      "estimatedTime": 45
+    },
+    {
+      "slug": "chapter-02-architecture",
+      "title": "Глава 2: Архитектура",
+      "order": 2,
+      "xp": 15,
+      "estimatedTime": 40
+    },
+    {
+      "slug": "chapter-03-implementation",
+      "title": "Глава 3: Код и верификация",
+      "order": 3,
+      "xp": 30,
+      "estimatedTime": 200
+    }
+  ],
+  "cheatSheet": "cheat-sheet.mdx",
+  "sprint": {
+    "slug": "sprint",
+    "title": "Финальный спринт: Свой бенчмарк",
+    "order": 99,
+    "xp": 100
+  }
+}

@@ -1,0 +1,429 @@
+---
+title: "Глава 2: Архитектура"
+project: "project-4-tower-defense"
+chapter: "chapter-02-architecture"
+order: 2
+xp: 15
+estimatedTime: 45
+tags: []
+---
+
+
+## 2.1 Обзор архитектуры (4 слоя)
+
+Архитектура Tower Defense строится на четырёх слоях, каждый из которых имеет чёткую зону ответственности. Такое разделение обеспечивает слабую связанность между системами и позволяет изменять один слой без каскадных изменений в остальных. Это особенно важно для Tower Defense, где количество параллельно работающих подсистем (башни атакуют, враги идут, снаряды летят, волны спавнятся) значительно выше, чем в большинстве других жанров.
+
+**Data Layer (Слой данных):** TowerData, EnemyData, WaveData, SpawnGroup — все наследуют Resource и используют @export vars для настройки в редакторе. Никакой логики, только данные. TowerData хранит стоимость, урон, скорость атаки, дальность, радиус взрыва, фактор замедления и сцену снаряда. EnemyData хранит HP, скорость, награду, устойчивость к замедлению и сцену врага. WaveData хранит массив SpawnGroup, задержку старта и бонус за скорость. SpawnGroup связывает EnemyData с количеством и интервалом спавна.
+
+**Logic Layer (Слой логики):** Глобальные менеджеры, управляющие игровыми системами через Autoload. GameManager (состояние игры, пауза, жизни, game over), WaveManager (FSM: Idle → Spawning → Active, управление очередью спавна), EconomyManager (баланс, доходы, расходы, продажа), PathManager (waypoints, NavigationRegion2D), AudioManager (SFX каналы, BGM), TowerRegistry (реестр определений башен для фабрики). Все менеджеры общаются через сигналы, обеспечивая слабую связанность.
+
+**Presentation Layer (Слой представления):** Main, GameMap, Tower scenes, Enemy scenes, Projectile scenes, HUD, TowerShop — все визуальные компоненты. Этот слой отображает данные из Data Layer и реагирует на сигналы из Logic Layer, но не содержит бизнес-логики. HUD обновляет полоску золота, когда получает сигнал balance_changed, но не вычисляет доход самостоятельно. TowerShop показывает доступные башни на основе TowerRegistry, но не решает, может ли игрок позволить себе покупку — это делает EconomyManager.
+
+**Persistence Layer (Слой хранения):** SaveManager (Autoload) — сериализует состояние игры в JSON, десериализует при загрузке. Каждый менеджер предоставляет методы get_save_data() и load_save_data(), а SaveManager координирует процесс сохранения/загрузки, собирая данные от всех менеджеров в единую структуру.
+
+## 2.2 Дерево сцен
+
+Дерево сцен — это визуальное представление архитектуры. Каждая сцена инкапсулирует свою функциональность и открывает только необходимые интерфейсы (сигналы, методы). Ниже приведены полные деревья для всех ключевых сцен проекта. Обратите внимание на группы узлов: «enemies», «spawn_point», «base_point», «projectiles_container», «towers_container», «enemies_container» — эти группы используются менеджерами для поиска объектов без хрупких ссылок по пути.
+
+### main.tscn
+
+Главная сцена, которая загружается при старте игры. Она содержит карту, HUD и магазин башен. Менеджеры подключены как Autoload и не входят в дерево сцен.
+
+```
+Main (Node2D) [scripts/main.gd]
+├── GameMap (Node2D) [scenes/game_map.tscn]
+│   ├── NavigationRegion2D
+│   │   └── NavigationPolygon
+│   ├── Background (TileMapLayer) — z_index: -1
+│   ├── Terrain (TileMapLayer) — z_index: 0
+│   ├── PathOverlay (TileMapLayer) — z_index: 1
+│   ├── TowerSlots (Node2D)
+│   │   ├── TowerSlot_01 (Area2D) [scenes/tower_slot.tscn]
+│   │   ├── TowerSlot_02 (Area2D)
+│   │   └── ... (20 slots total)
+│   ├── Towers (Node2D) — group: "towers_container"
+│   ├── Enemies (Node2D) — group: "enemies_container"
+│   ├── Projectiles (Node2D) — group: "projectiles_container"
+│   ├── Effects (Node2D) — визуальные эффекты
+│   ├── SpawnPoint (Marker2D) — group: "spawn_point"
+│   └── BasePoint (Marker2D) — group: "base_point"
+├── HUD (CanvasLayer) [scenes/hud.tscn]
+└── TowerShop (CanvasLayer) [scenes/tower_shop.tscn]
+```
+
+### tower_base.tscn
+
+Базовая сцена башни, от которой наследуются конкретные типы. Содержит спрайт основания, точку вращения турели с дулом, зону обнаружения (Area2D), таймер кулдауна и индикатор дальности. Конкретные типы башен добавляют свои специфические узлы (Line2D для лазера).
+
+```
+TowerBase (Node2D) [scripts/tower.gd]
+├── Sprite2D
+├── TurretPivot (Node2D)
+│   ├── TurretSprite (Sprite2D)
+│   └── Muzzle (Marker2D) — unique_name: %Muzzle
+├── RangeArea (Area2D) — unique_name: %RangeArea
+│   └── CollisionShape2D (CircleShape2D)
+├── AttackCooldown (Timer) — unique_name: %AttackCooldown
+└── RangeIndicator (Node2D) [scripts/range_indicator.gd]
+```
+
+### enemy_base.tscn
+
+Базовая сцена врага, от которой наследуются конкретные типы. Содержит физическое тело, навигационный агент, зону уязвимости (Hurtbox), полоску здоровья и эффект замедления. Каждый тип врага переопределяет EnemyData для настройки характеристик.
+
+```
+EnemyBase (CharacterBody2D) [scripts/enemy_base.gd]
+├── Sprite2D
+├── CollisionShape2D
+├── NavigationAgent2D
+├── Hurtbox (Area2D) [scripts/hurtbox.gd] — group: "hurtbox"
+│   └── CollisionShape2D
+├── HealthBar (Node2D) [scripts/health_bar.gd]
+│   ├── Background (ColorRect)
+│   └── Fill (ColorRect)
+└── SlowEffect (GPUParticles2D) — показывает при замедлении
+```
+
+### projectile_bullet.tscn
+
+Сцена снаряда для Gun Tower. Содержит Area2D с коллизией, спрайт и логику полёта к цели. Снаряды для Splash Tower и Slow Tower используют тот же базовый скрипт, но с другими параметрами (splash_radius > 0, slow_factor < 1.0).
+
+```
+Bullet (Area2D) [scripts/projectile.gd]
+├── Sprite2D
+└── CollisionShape2D
+```
+
+### hud.tscn
+
+Сцена HUD, отображающая текущее состояние игры: золото, жизни, номер волны и кнопки управления. Подписывается на сигналы менеджеров и обновляет отображение при изменениях.
+
+```
+HUD (CanvasLayer) [scripts/hud.gd]
+├── TopBar (HBoxContainer)
+│   ├── GoldIcon (TextureRect)
+│   ├── GoldLabel (Label) — unique_name: %GoldLabel
+│   ├── LivesIcon (TextureRect)
+│   ├── LivesLabel (Label) — unique_name: %LivesLabel
+│   └── WaveLabel (Label) — unique_name: %WaveLabel
+├── SpeedControl (HBoxContainer)
+│   ├── PauseButton (Button) — unique_name: %PauseButton
+│   └── FastForwardButton (Button)
+└── WaveAnnouncement (Label) — центрированный, скрыт по умолчанию
+```
+
+### tower_shop.tscn
+
+Сцена магазина башен, позволяющая игроку выбирать тип башни для размещения. Динамически строит список башен из TowerRegistry и показывает информацию о выбранной башне.
+
+```
+TowerShop (CanvasLayer) [scripts/tower_shop.gd]
+├── Panel (PanelContainer)
+│   └── VBoxContainer
+│       ├── TitleLabel (Label) — "Магазин"
+│       ├── TowerList (VBoxContainer) — unique_name: %TowerList
+│       │   ├── GunTowerButton (Button) — "Пулемёт: 100g"
+│       │   ├── SplashTowerButton (Button) — "Взрывная: 200g"
+│       │   ├── SlowTowerButton (Button) — "Замедляющая: 150g"
+│       │   └── LaserTowerButton (Button) — "Лазерная: 350g"
+│       └── TowerInfo (RichTextLabel) — unique_name: %TowerInfo
+└── SellButton (Button) — unique_name: %SellButton — "Продать: Xg"
+```
+
+## 2.3 Диаграмма классов
+
+Диаграмма классов показывает отношения между основными типами проекта. Автозагрузчики (Autoload) обеспечивают глобальный доступ к менеджерам, а сигналы — слабую связанность между ними. Data-ресурсы не содержат логики и используются менеджерами и компонентами представления. Стрелки показывают направления зависимостей: менеджеры зависят от данных, представление зависит от менеджеров, но менеджеры не зависят от представления.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     AUTOLOADS (Singletons)                       │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐      │
+│  │  GameManager │  │ WaveManager  │  │ EconomyManager   │      │
+│  │              │  │              │  │                  │      │
+│  │ lives: int   │  │ current_wave │  │ balance: int     │      │
+│  │ is_paused    │  │ state: FSM   │  │ sell_ratio: 0.7  │      │
+│  │ is_game_over │  │ spawn_queue  │  │                  │      │
+│  │              │  │              │  │ spend() → bool   │      │
+│  │ lose_life()  │  │ _start_wave()│  │ earn()           │      │
+│  │ toggle_pause │  │ request_skip │  │ can_afford()     │      │
+│  │ reset_game() │  │              │  │ get_sell_value() │      │
+│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘      │
+│         │                 │                    │                 │
+│    lives_changed    wave_started        balance_changed          │
+│    game_over        wave_completed                              │
+│    game_paused      all_waves_completed                         │
+│         │                 │                    │                 │
+│  ┌──────┴───────┐  ┌─────┴────────┐  ┌───────┴─────────┐      │
+│  │ PathManager  │  │ AudioManager │  │ TowerRegistry   │      │
+│  │              │  │              │  │                 │      │
+│  │ waypoints[]  │  │ sfx_players[]│  │ tower_data_map  │      │
+│  │ nav_region   │  │ bgm_player   │  │                 │      │
+│  │              │  │              │  │ get_tower_data()│      │
+│  │ setup()      │  │ play_sfx()   │  │ get_all_keys()  │      │
+│  │ get_spawn()  │  │ play_bgm()   │  │                 │      │
+│  │ get_base()   │  │ stop_bgm()   │  │                 │      │
+│  └──────────────┘  └──────────────┘  └─────────────────┘      │
+│                                                                  │
+│  ┌──────────────┐                                               │
+│  │ SaveManager  │  ← координирует сохранение/загрузку          │
+│  │              │    через get_save_data()/load_save_data()    │
+│  │ save_game()  │    всех менеджеров                            │
+│  │ load_game()  │                                               │
+│  │ delete_save()│                                               │
+│  └──────────────┘                                               │
+└─────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────── DATA LAYER ──────────────────────────┐
+│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │  TowerData   │  │  EnemyData   │  │     WaveData         │  │
+│  │  (Resource)  │  │  (Resource)  │  │    (Resource)        │  │
+│  │              │  │              │  │                      │  │
+│  │ tower_name   │  │ enemy_name   │  │ wave_number          │  │
+│  │ cost: int    │  │ max_health   │  │ spawn_groups[]       │  │
+│  │ damage       │  │ move_speed   │  │ start_delay          │  │
+│  │ attack_speed │  │ gold_reward  │  │ speed_bonus          │  │
+│  │ attack_range │  │ lives_cost   │  │                      │  │
+│  │ splash_radius│  │ slow_resist  │  │ get_total_enemies()  │  │
+│  │ slow_factor  │  │ is_boss      │  │ get_total_gold()     │  │
+│  │ slow_duration│  │              │  │                      │  │
+│  │ proj_scene   │  │ get_hp_per   │  └──────────────────────┘  │
+│  │ target_strat │  │ _gold()      │                            │
+│  │              │  └──────────────┘  ┌──────────────────────┐  │
+│  │ get_dps()    │                    │    SpawnGroup        │  │
+│  │ get_upgrade  │                    │    (Resource)        │  │
+│  │ _cost()      │                    │                      │  │
+│  │ get_damage   │                    │ enemy_data: EnemyData│  │
+│  │ _at_level()  │                    │ count: int           │  │
+│  │ get_range    │                    │ interval: float      │  │
+│  │ _at_level()  │                    │ delay_after: float   │  │
+│  └──────────────┘                    └──────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌────────────────────── GAME OBJECTS ────────────────────────────┐
+│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │  TowerBase   │  │  EnemyBase   │  │    Projectile        │  │
+│  │  (Node2D)    │  │(CharBody2D)  │  │    (Area2D)          │  │
+│  │              │  │              │  │                      │  │
+│  │ tower_data   │  │ enemy_data   │  │ target               │  │
+│  │ level: int   │  │ current_hp   │  │ damage               │  │
+│  │ enemies_     │  │ path_progress│  │ splash_radius        │  │
+│  │  in_range[]  │  │ slow_timer   │  │ slow_factor          │  │
+│  │ current_     │  │ current_slow │  │ slow_duration        │  │
+│  │  target      │  │ is_dead      │  │ speed                │  │
+│  │ show_range   │  │              │  │ lifetime             │  │
+│  │ total_       │  │ take_damage()│  │                      │  │
+│  │  invested    │  │ apply_slow() │  │ initialize()         │  │
+│  │              │  │ get_path_    │  │ _on_hit()            │  │
+│  │ upgrade()    │  │  progress()  │  │ _apply_splash()      │  │
+│  │ sell()       │  │ get_current_ │  │ _apply_slow()        │  │
+│  │ _find_target │  │  health()    │  │                      │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────────────────────┘  │
+│         │                 │                                     │
+│  ┌──────┴───────┐  ┌─────┴────────┐  ┌──────────────────────┐  │
+│  │ TowerLaser   │  │  TowerSlot   │  │     Hurtbox          │  │
+│  │ (Node2D)     │  │  (Area2D)    │  │    (Area2D)          │  │
+│  │              │  │              │  │                      │  │
+│  │ line_2d      │  │ is_occupied  │  │ group: "hurtbox"     │  │
+│  │ is_firing    │  │ placed_tower │  │                      │  │
+│  │              │  │              │  │                      │  │
+│  │ _fire_laser()│  │ place_tower()│  │                      │  │
+│  │ _stop_laser()│  │ remove_tower │  │                      │  │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────── UI OBJECTS ──────────────────────────┐
+│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │     HUD      │  │  TowerShop   │  │    HealthBar         │  │
+│  │(CanvasLayer) │  │(CanvasLayer) │  │    (Node2D)          │  │
+│  │              │  │              │  │                      │  │
+│  │ gold_label   │  │ tower_list   │  │ bg: ColorRect        │  │
+│  │ lives_label  │  │ tower_info   │  │ fill: ColorRect      │  │
+│  │ wave_label   │  │ sell_button  │  │                      │  │
+│  │ wave_announce│  │ selected_slot│  │ update_bar()         │  │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 2.4 Поток данных
+
+Понимание потока данных — ключ к архитектуре Tower Defense. Два основных сценария демонстрируют, как системы взаимодействуют через сигналы и методы, обеспечивая слабую связанность.
+
+### Сценарий 1: Игрок ставит башню
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  1. Player clicks TowerSlot                                  │
+│     TowerSlot._on_input_event() → slot_selected.emit(self)  │
+│                        │                                      │
+│  2. TowerShop receives slot_selected                         │
+│     TowerShop.set_selected_slot(slot)                        │
+│     Shows available towers from TowerRegistry                │
+│                        │                                      │
+│  3. Player selects tower type (e.g. "gun")                  │
+│     TowerShop._on_tower_button_pressed("gun")               │
+│                        │                                      │
+│  4. EconomyManager check                                     │
+│     if EconomyManager.can_afford(100g):                      │
+│        EconomyManager.spend(100g) → balance_changed.emit()  │
+│                        │                                      │
+│  5. Tower instantiation                                      │
+│     data = TowerRegistry.get_tower_data("gun")              │
+│     tower = data.tower_scene.instantiate()                   │
+│     tower.tower_data = data                                  │
+│     towers_container.add_child(tower)                        │
+│                        │                                      │
+│  6. TowerSlot occupied                                       │
+│     slot.place_tower(tower)                                  │
+│     slot.is_occupied = true                                  │
+│                                                               │
+│  7. HUD updates                                              │
+│     balance_changed → HUD._on_balance_changed(new_balance)  │
+│     GoldLabel.text = "Золото: %d" % new_balance             │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Сценарий 2: Волна врагов и бой
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  1. WaveManager starts wave                                  │
+│     WaveManager._start_wave() → wave_started.emit(wave_num) │
+│                        │                                      │
+│  2. Enemies spawned                                          │
+│     WaveManager._spawn_enemy(data)                           │
+│     enemy = data.enemy_scene.instantiate()                   │
+│     enemy.global_position = SpawnPoint.global_position       │
+│     nav_agent.target_position = BasePoint.global_position    │
+│     enemies_container.add_child(enemy)                       │
+│                        │                                      │
+│  3. Enemy moves via NavigationAgent2D                        │
+│     enemy._physics_process(delta)                            │
+│     next_pos = nav_agent.get_next_path_position()           │
+│     velocity = direction * speed                              │
+│     move_and_slide()                                         │
+│                        │                                      │
+│  4. Tower detects enemy                                      │
+│     RangeArea.body_entered → _on_range_entered(body)        │
+│     enemies_in_range.append(body)                            │
+│                        │                                      │
+│  5. Tower selects target                                     │
+│     Tower._find_target() → _target_first()                  │
+│     current_target = enemy with max path_progress           │
+│                        │                                      │
+│  6. Tower attacks                                            │
+│     Tower._attack() → projectile = data.proj_scene.instantiate()│
+│     proj.initialize(target, damage, splash, slow, speed)     │
+│     projectiles_container.add_child(proj)                    │
+│                        │                                      │
+│  7. Projectile hits enemy                                    │
+│     Projectile._physics_process() → distance < 10.0         │
+│     Projectile._on_hit() → target.take_damage(damage)       │
+│                        │                                      │
+│  8. Enemy takes damage                                       │
+│     Enemy.take_damage() → current_health -= amount          │
+│     health_changed.emit(current, max)                        │
+│     if current_health <= 0: _die()                           │
+│                        │                                      │
+│  9. Enemy dies                                               │
+│     Enemy._die() → enemy_died.emit(gold_reward)             │
+│     EconomyManager.earn(reward) → balance_changed.emit()    │
+│     remove_from_group("enemies")                             │
+│     queue_free()                                             │
+│                        │                                      │
+│  10. OR: Enemy reaches base                                  │
+│      Enemy._reached_base() → enemy_reached_base.emit(1)     │
+│      GameManager.lose_life(1) → lives_changed.emit(lives)   │
+│      if lives <= 0: game_over.emit()                        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## 2.5 Паттерны проектирования
+
+Tower Defense — это жанр, который естественно реализует множество классических паттернов проектирования. Каждый паттерн решает конкретную проблему архитектуры, и понимание этих паттернов поможет вам не только в этом проекте, но и в будущих играх.
+
+| Паттерн | Где применён | Зачем |
+|---|---|---|
+| Observer (Сигналы) | balance_changed, wave_started, enemy_died, game_over, lives_changed | Слабая связанность между системами. EconomyManager не знает о HUD, но HUD реагирует на изменение баланса через сигнал. |
+| Strategy | TargetStrategy (First, Last, Strongest) в Tower._find_target() | Разные алгоритмы выбора цели без создания подклассов башни. Башня делегирует выбор цели стратегии, определённой в TowerData. |
+| State (FSM) | WaveManager: Idle → Spawning → Active | Управление фазами волны. Каждое состояние имеет свою логику обновления, и переходы между состояниями чётко определены. |
+| Singleton (Autoload) | GameManager, WaveManager, EconomyManager, PathManager, AudioManager, TowerRegistry, SaveManager | Глобальный доступ к подсистемам без передачи ссылок через дерево сцен. Все менеджеры доступны из любого скрипта. |
+| Factory | TowerRegistry + PackedScene | Создание башен по типу без switch/if-else. TowerRegistry.get_tower_data(key) возвращает TowerData с PackedScene, которая инстанцируется. |
+| Data-View separation | TowerData (Resource) vs Tower (Node2D) | Данные отделены от отображения. TowerData хранит параметры, Tower визуализирует и управляет поведением. Изменение данных не требует изменения кода. |
+| Delegation | Projectile делегирует урон цели через target.take_damage() | Снаряд не знает, как враг получает урон — он просто вызывает метод. Это позволяет менять логику урона в одном месте. |
+
+## 2.6 Структура файлов проекта
+
+Структура файлов проекта организована по типам ресурсов: сцены, скрипты, ресурсы данных, C++ исходный код и ассеты. Такое разделение упрощает навигацию и позволяет быстро находить нужные файлы. Обратите внимание на папку cpp/ — она содержит весь исходный код GDExtension и скомпилированные библиотеки.
+
+```
+res://
+├── scenes/
+│   ├── main.tscn
+│   ├── game_map.tscn
+│   ├── tower_slot.tscn
+│   ├── tower_gun.tscn
+│   ├── tower_splash.tscn
+│   ├── tower_slow.tscn
+│   ├── tower_laser.tscn
+│   ├── enemy_basic.tscn
+│   ├── enemy_fast.tscn
+│   ├── enemy_tank.tscn
+│   ├── enemy_boss.tscn
+│   ├── projectile_bullet.tscn
+│   ├── projectile_missile.tscn
+│   ├── hud.tscn
+│   └── tower_shop.tscn
+├── scripts/
+│   ├── main.gd
+│   ├── game_manager.gd
+│   ├── wave_manager.gd
+│   ├── economy_manager.gd
+│   ├── path_manager.gd
+│   ├── audio_manager.gd
+│   ├── tower_registry.gd
+│   ├── save_manager.gd
+│   ├── tower.gd
+│   ├── tower_laser.gd
+│   ├── enemy_base.gd
+│   ├── projectile.gd
+│   ├── tower_slot.gd
+│   ├── hud.gd
+│   ├── tower_shop.gd
+│   ├── health_bar.gd
+│   ├── hurtbox.gd
+│   └── range_indicator.gd
+├── resources/
+│   ├── tower_gun_data.tres
+│   ├── tower_splash_data.tres
+│   ├── tower_slow_data.tres
+│   ├── tower_laser_data.tres
+│   ├── enemy_basic_data.tres
+│   ├── enemy_fast_data.tres
+│   ├── enemy_tank_data.tres
+│   ├── enemy_boss_data.tres
+│   └── wave_01_data.tres ... wave_15_data.tres
+├── cpp/                        # GDExtension source
+│   ├── SConstruct
+│   ├── src/
+│   │   ├── register_types.cpp
+│   │   ├── register_types.h
+│   │   ├── td_utils.h
+│   │   ├── td_utils.cpp
+│   │   ├── path_finder.h
+│   │   ├── path_finder.cpp
+│   │   ├── projectile_sim.h
+│   │   └── projectile_sim.cpp
+│   ├── bin/                    # Скомпилированные библиотеки
+│   └── td_cpp.gdextension
+├── assets/
+│   ├── images/
+│   ├── audio/
+│   └── fonts/
+└── project.godot
+```
+
+---

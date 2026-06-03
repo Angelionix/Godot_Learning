@@ -1,0 +1,376 @@
+---
+title: "Глава 2: Архитектура"
+project: "project-3-metroidvania"
+chapter: "chapter-02-architecture"
+order: 2
+xp: 15
+estimatedTime: 45
+tags: []
+---
+
+
+## 2.1 Обзор архитектуры (4 слоя)
+
+Архитектура проекта строится на четырёх слоях, каждый из которых имеет чёткую зону ответственности. Такое разделение обеспечивает слабую связанность между системами и позволяет изменять один слой без каскадных изменений в остальных. Это особенно важно для метроидвании, где количество взаимозависимых систем значительно выше, чем в простых платформерах.
+
+**Data Layer (Слой данных):** Содержит все данные, описывающие игровые объекты, но не содержащие логики. AbilityData, ItemData, EnemyData, RoomData — все наследуют Resource и используют @export для настройки в редакторе. Это позволяет геймдизайнеру настраивать параметры врагов, предметов и способностей без изменения кода, а программисту — ссылаться на типизированные данные вместо магических чисел.
+
+**Logic Layer (Слой логики):** Содержит глобальные менеджеры, управляющие игровыми системами. GameManager (пауза, регистрация игрока), AbilityManager (разблокировка и проверка способностей), InventoryManager (добавление/удаление предметов), SceneManager (переходы между комнатами), SaveManager (сохранение/загрузка). Все менеджеры реализованы как Autoload (Singleton), что обеспечивает глобальный доступ без передачи ссылок через дерево сцен.
+
+**Presentation Layer (Слой представления):** Содержит визуальные компоненты: Player, Enemy-сцены, HUD, InventoryUI, DamageNumber. Этот слой отображает данные из Data Layer и реагирует на сигналы из Logic Layer, но не содержит бизнес-логики. Например, HUD обновляет полоску здоровья, когда получает сигнал `health_changed`, но не вычисляет урон самостоятельно.
+
+**Persistence Layer (Слой хранения):** Отвечает за сериализацию и десериализацию состояния игры. SaveManager единолично владеет структурой world_state и предоставляет методы для отметки убитых врагов, собранных предметов и открытых дверей. При сохранении все менеджеры отдают свои данные через метод `get_save_data()`, при загрузке — принимают через `load_save_data()`.
+
+## 2.2 Дерево сцен
+
+Дерево сцен — это визуальное представление архитектуры. Каждая сцена инкапсулирует свою функциональность и暴露ает только необходимые интерфейсы (сигналы, методы). Ниже приведены полные деревья для всех ключевых сцен проекта. Обратите внимание на то, как компоненты (Hitbox, Hurtbox, HealthComponent) используются повторно в разных сценах — это основа компонентного подхода.
+
+### main.tscn
+
+Главная сцена, которая загружается при старте игры. Она содержит менеджеры, игрока, HUD и слои переходов. SceneManager управляет динамической загрузкой комнат, а FadeOverlay обеспечивает визуально плавные переходы.
+
+```
+Main (Node2D) [scripts/main.gd]
+├── SceneManager (Node) [autoload: scripts/scene_manager.gd]
+│   ├── CurrentRoom (Node2D) — placeholder, динамически заменяемый
+│   ├── Player (CharacterBody2D) [scenes/player.tscn]
+│   └── FadeOverlay (ColorRect) — full screen, color: black, modulate.a: 0
+├── HUD (CanvasLayer) [scenes/hud.tscn]
+└── TransitionLayer (CanvasLayer)
+    └── FadeOverlay (ColorRect) — full screen, color: black
+```
+
+### player.tscn
+
+Сцена игрока — самая сложная в проекте. Она содержит физическое тело, спрайт, коллизии, Hitbox/Hurtbox, камеру, конечный автомат с девятью состояниями и AnimationTree для управления анимациями. Все состояния FSM реализованы как дочерние узлы Node, что позволяет добавлять новые состояния без изменения существующего кода.
+
+```
+Player (CharacterBody2D) [scripts/player.gd]
+├── Sprite2D (AnimatedSprite2D)
+├── CollisionShape2D
+├── Hurtbox (Area2D) [scripts/hurtbox.gd]
+│   └── CollisionShape2D
+├── HitboxPivot (Node2D)
+│   ├── Hitbox (Area2D) [scripts/hitbox.gd]
+│   │   └── CollisionShape2D — disabled by default
+│   └── AttackCooldown (Timer) — wait_time: 0.4
+├── DashCooldown (Timer) — wait_time: 0.6
+├── ProjectileSpawn (Marker2D)
+├── Camera2D — smoothing enabled, drag_margin_h/v: 0.15
+├── StateMachine (Node) [scripts/state_machine.gd]
+│   ├── Idle (Node) [scripts/states/idle_state.gd]
+│   ├── Run (Node) [scripts/states/run_state.gd]
+│   ├── Jump (Node) [scripts/states/jump_state.gd]
+│   ├── Fall (Node) [scripts/states/fall_state.gd]
+│   ├── Attack (Node) [scripts/states/attack_state.gd]
+│   ├── Dash (Node) [scripts/states/dash_state.gd]
+│   ├── Hurt (Node) [scripts/states/hurt_state.gd]
+│   ├── WallSlide (Node) [scripts/states/wall_slide_state.gd]
+│   └── Dead (Node) [scripts/states/dead_state.gd]
+└── AnimationTree [with AnimationPlayer reference]
+```
+
+### room_template.tscn
+
+Шаблон комнаты, от которого наследуются все комнаты в игре. Каждая комната имеет три TileMapLayer (фон, террейн, передний план), контейнеры для врагов и предметов, точки входа для размещения игрока при переходе и маркеры для ограничения камеры. Структура единообразна для всех комнат, что упрощает создание новых комнат и работу SceneManager.
+
+```
+Room (Node2D) [scripts/room.gd]
+├── Background (TileMapLayer) — z_index: -2
+├── Terrain (TileMapLayer) — z_index: 0, collision enabled
+├── Foreground (TileMapLayer) — z_index: 2
+├── Enemies (Node2D)
+├── Items (Node2D)
+├── Interactables (Node2D) — двери, переключатели, точки сохранения
+├── EntryPoints (Node2D)
+│   ├── Default (Marker2D)
+│   ├── FromLeft (Marker2D)
+│   ├── FromRight (Marker2D)
+│   └── SavePoint (Marker2D)
+└── CameraLimits (Node2D)
+    ├── TopLeft (Marker2D)
+    └── BottomRight (Marker2D)
+```
+
+### enemy_base.tscn (абстрактная)
+
+Базовая сцена врага, от которой наследуются все конкретные типы врагов. Содержит компоненты, общие для всех врагов: спрайт, коллизию, Hurtbox (получение урона), Hitbox (нанесение урона), зону обнаружения и компонент здоровья. Конкретные враги добавляют свои специфические узлы (например, лучник — SpawnPoint для стрел).
+
+```
+Enemy (CharacterBody2D) [scripts/enemy_base.gd]
+├── Sprite2D
+├── CollisionShape2D
+├── Hurtbox (Area2D)
+│   └── CollisionShape2D
+├── Hitbox (Area2D)
+│   └── CollisionShape2D
+├── DetectionZone (Area2D)
+│   └── CollisionShape2D
+└── HealthComponent (Node) [scripts/health_component.gd]
+```
+
+## 2.3 Диаграмма классов
+
+Диаграмма классов показывает отношения между основными типами проекта. GameManager является центральным хабом, к которому обращаются другие менеджеры и компоненты. Сигналы обеспечивают слабую связанность: менеджеры не вызывают методы друг друга напрямую, а реагируют на сигналы. Это позволяет заменять или отключать отдельные системы без каскадных изменений.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     AUTOLOADS (Singletons)                   │
+│                                                              │
+│  ┌──────────────┐  ┌───────────────┐  ┌──────────────────┐  │
+│  │  GameManager │  │ AbilityManager│  │ InventoryManager │  │
+│  │              │  │               │  │                  │  │
+│  │ is_paused    │  │ _abilities    │  │ items[]          │  │
+│  │ player       │  │               │  │ equipment{}      │  │
+│  │              │  │ unlock()      │  │                  │  │
+│  │ pause_game() │  │ has_ability() │  │ add_item()       │  │
+│  │ resume_game()│  │               │  │ remove_item()    │  │
+│  └──────┬───────┘  └───────┬───────┘  └────────┬─────────┘  │
+│         │                  │                    │             │
+│         │   signals        │   signals          │  signals    │
+│         │                  │                    │             │
+│  ┌──────┴───────┐  ┌──────┴────────┐  ┌───────┴─────────┐  │
+│  │  SceneManager│  │  SaveManager  │  │  AudioManager   │  │
+│  │              │  │               │  │                  │  │
+│  │ current_room │  │ world_state{} │  │ _current_bgm    │  │
+│  │              │  │               │  │                  │  │
+│  │transition_to │  │ save_game()   │  │ play_sfx()      │  │
+│  │ setup()      │  │ load_game()   │  │ play_bgm()      │  │
+│  └──────────────┘  └───────────────┘  └──────────────────┘  │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+
+┌────────────────────────── DATA LAYER ──────────────────────┐
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐ │
+│  │ AbilityData  │  │  ItemData    │  │    EnemyData      │ │
+│  │ (Resource)   │  │  (Resource)  │  │   (Resource)      │ │
+│  │              │  │              │  │                   │ │
+│  │ id           │  │ id           │  │ id                │ │
+│  │ display_name │  │ display_name │  │ display_name      │ │
+│  │ description  │  │ type         │  │ max_health        │ │
+│  │ icon         │  │ stackable    │  │ damage            │ │
+│  │ type         │  │ quantity     │  │ move_speed        │ │
+│  │ room_id      │  │ effects      │  │ detection_range   │ │
+│  └──────────────┘  └──────────────┘  │ knockback_force   │ │
+│                                       │ xp_reward         │ │
+│                                       └───────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+
+┌────────────────────── COMPONENTS ──────────────────────────┐
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │
+│  │   Hitbox     │  │   Hurtbox    │  │ HealthComponent  │ │
+│  │  (Area2D)    │  │  (Area2D)    │  │    (Node)        │ │
+│  │              │  │              │  │                  │ │
+│  │ damage: int  │  │              │  │ health: int      │ │
+│  │ group:"hitbox"│  │group:"hurtbox"│ │ max_health: int  │ │
+│  └──────────────┘  └──────────────┘  │ died (signal)    │ │
+│                                       └──────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+
+┌────────────────── STATE MACHINE ───────────────────────────┐
+│                                                             │
+│  State (base) ─── PlayerState ───┬── IdleState             │
+│       │                          ├── RunState              │
+│  transition_requested            ├── JumpState             │
+│  enter()                         ├── FallState             │
+│  exit()                          ├── AttackState           │
+│  physics_update()                ├── DashState             │
+│  update()                        ├── HurtState             │
+│                                  ├── WallSlideState        │
+│                                  └── DeadState             │
+│                                                             │
+│  StateMachine                                                  │
+│  ├── current_state: State                                       │
+│  ├── states: Dictionary                                         │
+│  └── _on_transition_requested()                                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## 2.4 Поток данных
+
+Понимание потока данных — ключ к отладке и расширению проекта. Ниже описаны два ключевых сценария с пошаговым прослеживанием сигналов и вызовов методов. Каждый шаг помечен источником (кто инициирует) и типом взаимодействия (сигнал, прямой вызов, проверка свойства).
+
+### Сценарий 1: Игрок получает урон от врага
+
+1. **Физический движок** обнаруживает пересечение Area2D: Hitbox врага входит в Hurtbox игрока
+2. **Hurtbox игрока** (`_on_area_entered`) проверяет, что входящая область в группе `"hitbox"` и не принадлежит самому игроку
+3. **Hurtbox игрока** извлекает `damage` из Hitbox врага и вызывает `player.take_damage(damage, hitbox.global_position)`
+4. **Player.take_damage()** проверяет `invincible` и `is_hurt`; если оба false — уменьшает `health`, что вызывает setter, который эмитит `health_changed`
+5. **Player.take_damage()** вызывает `apply_knockback(source_pos, 250.0)`, устанавливая `velocity` в направлении от источника
+6. **Player.take_damage()** вызывает переход в состояние Hurt через `state_machine._on_transition_requested(&"Hurt")`
+7. **HurtState.enter()** устанавливает `is_hurt = true` и вызывает `player.start_invincibility(1.0)`
+8. **Player.start_invincibility()** устанавливает `invincible = true` и запускает Tween для мигания спрайта
+9. **HUD** получает сигнал `health_changed` и обновляет полоску здоровья
+10. **HurtState.physics_update()** уменьшает таймер; по истечении — переход в Idle/Run/Fall/Dead
+11. **Tween** завершается и сбрасывает `invincible = false`
+
+### Сценарий 2: Игрок подбирает способность (ability pickup)
+
+1. **Физический движок** обнаруживает: тело игрока входит в Area2D способности
+2. **AbilityPickup._on_body_entered()** проверяет, что body в группе `"player"` и способность ещё не разблокирована
+3. **AbilityPickup** вызывает `AbilityManager.unlock_ability(ability_id)`
+4. **AbilityManager.unlock_ability()** добавляет `ability_id` в словарь `_abilities` и эмитит сигнал `ability_unlocked(ability_id)`
+5. **AbilityPickup** вызывает `SaveManager.mark_item_collected(room_id, pickup_id)` для сохранения факта подбора
+6. **AbilityPickup** воспроизводит звук через `AudioManager.play_sfx("ability_unlock")` и уничтожается (`queue_free()`)
+7. **HUD** получает сигнал `ability_unlocked` и добавляет индикатор способности в AbilityIndicator
+8. **Player** (в состояниях Jump, Dash, WallSlide) теперь получает доступ к новой способности через `AbilityManager.has_ability()`
+9. **RoomTransition** с `required_ability = ability_id` теперь пропускает игрока, открывая новую область
+10. При следующем сохранении `SaveManager.save_game()` сохраняет `_abilities` через `AbilityManager.get_save_data()`
+
+## 2.5 Паттерны проектирования
+
+Проект использует семь ключевых паттернов проектирования, каждый из которых решает конкретную проблему. Понимание этих паттернов и причин их применения критически важно для расширения проекта и избежания типичных ошибок.
+
+| Паттерн | Где применён | Зачем |
+|---|---|---|
+| Observer (Сигналы) | `ability_unlocked`, `health_changed`, `room_changed`, `inventory_changed`, `player_died` | Слабая связанность между системами: HUD обновляется автоматически при изменении здоровья, без прямых вызовов из Player |
+| State Machine | Player FSM (9 состояний), Enemy FSM (5 состояний) | Управление сложным поведением: каждый state инкапсулирует свою логику, переходы чётко определены, невозможно оказаться в «промежуточном» состоянии |
+| Strategy | AbilityManager + match в состояниях игрока | Разные способности обрабатываются единообразно: проверка `has_ability()` в состоянии решает, доступно ли действие, без if-else цепочек |
+| Singleton (Autoload) | GameManager, SaveManager, SceneManager, AbilityManager, InventoryManager, AudioManager | Глобальный доступ к менеджерам без передачи ссылок через дерево сцен; Godot Autoload гарантирует единственный экземпляр |
+| Factory | `PackedScene.instantiate()` для снарядов, чисел урона, предметов | Динамическое создание объектов в рантайме: снаряды создаются при стрельбе, числа урона — при попадании |
+| Data-View separation | ItemData/AbilityData (Resource) vs UI-сцены | Данные отделены от отображения: геймдизайнер настраивает ItemData в инспекторе, UI автоматически подстраивается |
+| Component | HealthComponent, Hitbox, Hurtbox — переиспользуемые узлы | Композиция вместо наследования: враги и игрок используют одни и те же компоненты, что упрощает добавление новых типов врагов |
+
+## 2.6 Структура файлов проекта
+
+Чёткая организация файлов — залог поддерживаемости проекта. Каждый файл находится в логически обоснованном месте, а структура каталогов отражает архитектурные слои. Имена файлов используют snake_case, что соответствует стилю GDScript и Godot.
+
+```
+res://
+├── project.godot
+├── default_bus_layout.tres
+│
+├── scripts/
+│   ├── main.gd
+│   ├── player.gd
+│   ├── enemy_base.gd
+│   ├── boss_guardian.gd
+│   ├── room.gd
+│   ├── room_transition.gd
+│   ├── state_machine.gd
+│   ├── state.gd
+│   ├── player_state.gd
+│   ├── hitbox.gd
+│   ├── hurtbox.gd
+│   ├── health_component.gd
+│   ├── damage_number.gd
+│   ├── ability_pickup.gd
+│   ├── item_pickup.gd
+│   ├── save_point.gd
+│   ├── projectile.gd
+│   ├── minimap.gd
+│   │
+│   ├── managers/
+│   │   ├── game_manager.gd
+│   │   ├── ability_manager.gd
+│   │   ├── inventory_manager.gd
+│   │   ├── scene_manager.gd
+│   │   ├── save_manager.gd
+│   │   └── audio_manager.gd
+│   │
+│   ├── data/
+│   │   ├── ability_data.gd
+│   │   ├── item_data.gd
+│   │   └── enemy_data.gd
+│   │
+│   ├── states/
+│   │   ├── idle_state.gd
+│   │   ├── run_state.gd
+│   │   ├── jump_state.gd
+│   │   ├── fall_state.gd
+│   │   ├── attack_state.gd
+│   │   ├── dash_state.gd
+│   │   ├── hurt_state.gd
+│   │   ├── wall_slide_state.gd
+│   │   └── dead_state.gd
+│   │
+│   └── ui/
+│       ├── hud.gd
+│       ├── inventory_ui.gd
+│       ├── pause_menu.gd
+│       └── death_screen.gd
+│
+├── scenes/
+│   ├── main.tscn
+│   ├── player.tscn
+│   ├── room_template.tscn
+│   ├── enemy_base.tscn
+│   ├── projectile.tscn
+│   ├── damage_number.tscn
+│   ├── ability_pickup.tscn
+│   ├── item_pickup.tscn
+│   ├── save_point.tscn
+│   │
+│   ├── rooms/
+│   │   ├── start.tscn
+│   │   ├── forest_east.tscn
+│   │   ├── forest_west.tscn
+│   │   ├── forest_upper.tscn
+│   │   ├── cave_entry.tscn
+│   │   ├── cave_deep.tscn
+│   │   ├── temple_entry.tscn
+│   │   ├── temple_inner.tscn
+│   │   ├── temple_vault.tscn
+│   │   ├── castle_gate.tscn
+│   │   ├── castle_lower.tscn
+│   │   ├── castle_tower.tscn
+│   │   └── boss_arena.tscn
+│   │
+│   ├── enemies/
+│   │   ├── slime.tscn
+│   │   ├── bat.tscn
+│   │   ├── knight.tscn
+│   │   └── archer.tscn
+│   │
+│   └── ui/
+│       ├── hud.tscn
+│       ├── inventory_ui.tscn
+│       ├── pause_menu.tscn
+│       └── death_screen.tscn
+│
+├── resources/
+│   ├── abilities/
+│   │   ├── double_jump.tres
+│   │   ├── dash.tres
+│   │   ├── projectile.tres
+│   │   └── wall_jump.tres
+│   │
+│   ├── items/
+│   │   ├── health_potion.tres
+│   │   ├── max_health_upgrade.tres
+│   │   ├── attack_upgrade.tres
+│   │   └── castle_key.tres
+│   │
+│   └── enemies/
+│       ├── slime.tres
+│       ├── bat.tres
+│       ├── knight.tres
+│       ├── archer.tres
+│       └── guardian.tres
+│
+├── assets/
+│   ├── sprites/
+│   │   ├── player/
+│   │   ├── enemies/
+│   │   ├── items/
+│   │   └── effects/
+│   │
+│   ├── tilesets/
+│   │   ├── forest_tileset.tres
+│   │   ├── cave_tileset.tres
+│   │   ├── temple_tileset.tres
+│   │   └── castle_tileset.tres
+│   │
+│   ├── audio/
+│   │   ├── sfx/
+│   │   └── bgm/
+│   │
+│   └── fonts/
+│
+└── addons/
+    └── (пусто — плагины не требуются для базового проекта)
+```
+
+---

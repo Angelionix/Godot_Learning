@@ -1,0 +1,65 @@
+---
+title: "Шпаргалка: State Machine & AnimationTree"
+project: "project-3-metroidvania"
+chapter: "cheat-sheet"
+order: 98
+xp: 0
+estimatedTime: 0
+tags: []
+type: "cheat-sheet"
+---
+
+### FSM (Конечный автомат)
+| Действие | Код | Раздел |
+|---|---|---|
+| Базовое состояние | `class_name PlayerState extends Node; signal transition_requested(target: String)` | P3 §2.3 |
+| Переключение | `transition_requested.emit("run")` из состояния | P3 §2.5 |
+| Обработка | `StateMachine._on_transition_requested(): current_state.exit(); _set_state(target)` | P3 §2.5 |
+| enter/exit | `func enter() -> void:` / `func exit() -> void:` — инициализация и очистка | P3 §2.5 |
+| physics_update | `func physics_update(delta: float) -> void:` — логика в _physics_process | P3 §2.5 |
+| update | `func update(delta: float) -> void:` — логика в _process | P3 §2.5 |
+
+### AnimationTree
+| Действие | Настройка | Раздел |
+|---|---|---|
+| Создать | Add Node → AnimationTree, задать AnimationPlayer | P3 §2.5 |
+| StateMachine | Root → AnimationNodeStateMachine | P3 §2.5 |
+| Переход | Соединить состояния + задать условие (switch/bool) | P3 §2.5 |
+| Управление кодом | `animation_tree["parameters/conditions/is_running"] = true` | P3 §2.5 |
+| Blend Space | AnimationNodeBlendSpace2D для направления движения | P3 §2.5 |
+
+### TileMapLayer (Godot 4.3)
+| Действие | Настройка | Раздел |
+|---|---|---|
+| Создать | Add Node → TileMapLayer | P3 §1.4 |
+| TileSet | Создать TileSet-ресурс, добавить атлас | P3 §1.4 |
+| Коллизия | В TileSet → Physics Layer → нарисовать полигон | P3 §1.4 |
+| Автотайлинг | Настроить bitmask (3x3) для террейна | P3 §1.4 |
+| Слои | Background (z=-2), Terrain (z=0), Foreground (z=2) | P3 §2.2 |
+
+### Hitbox / Hurtbox
+| Компонент | Настройка | Раздел |
+|---|---|---|
+| Hurtbox | Area2D + CollisionShape2D, group: "hurtbox" | P3 §1.5 |
+| Hitbox | Area2D + CollisionShape2D, group: "hitbox", disabled by default | P3 §1.5 |
+| Слои | Hitbox и Hurtbox на разных collision layers | P3 §1.5 |
+| I-frames | `set_deferred("monitorable", false)` + Timer 1 сек | P3 §1.5 |
+| Knockback | `(global_position - source).normalized() * force` | P3 §1.5 |
+
+### Инвентарь
+| Действие | Код | Раздел |
+|---|---|---|
+| Добавить предмет | `InventoryManager.add_item(item_data)` | P3 §2.3 |
+| Проверить наличие | `InventoryManager.has_item("key_red")` | P3 §3.8 |
+| Удалить предмет | `InventoryManager.remove_item(item_id)` | P3 §3.8 |
+| ItemData (Resource) | `@export var id: String; @export var type: ItemType` | P3 §2.1 |
+
+### Сохранение мира
+| Действие | Код | Раздел |
+|---|---|---|
+| Отметить врага | `SaveManager.mark_enemy_killed(room_id, enemy_id)` | P3 §3.12 |
+| Проверить врага | `SaveManager.is_enemy_killed(room_id, enemy_id)` | P3 §3.12 |
+| Сохранить мир | `world_state[room_id] = {"killed": [...], "collected": [...]}` | P3 §2.4 |
+| Загрузить мир | `SaveManager.load_game()` → менеджеры восстанавливают состояние | P3 §3.12 |
+
+---
